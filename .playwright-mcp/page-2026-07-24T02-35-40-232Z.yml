@@ -1,0 +1,177 @@
+- generic [ref=e2]:
+  - region "Notifications alt+T"
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]: "N"
+        - generic [ref=e8]:
+          - paragraph [ref=e9]: NEEKLO OS
+          - paragraph [ref=e10]: AI операционная система
+      - navigation [ref=e11]:
+        - generic [ref=e12]:
+          - paragraph [ref=e13]: ГЛАВНАЯ
+          - link "Главная" [ref=e14] [cursor=pointer]:
+            - /url: /osnee
+          - link "Dashboard" [ref=e21] [cursor=pointer]:
+            - /url: /osnee/dashboard
+          - link "Brain HUD" [ref=e25] [cursor=pointer]:
+            - /url: /osnee/brain
+        - generic [ref=e35]:
+          - paragraph [ref=e36]: АУТРИЧ
+          - link "Обзор" [ref=e37] [cursor=pointer]:
+            - /url: /osnee/outreach
+          - link "Парсинг" [ref=e46] [cursor=pointer]:
+            - /url: /osnee/outreach/parse
+          - link "Агент" [ref=e53] [cursor=pointer]:
+            - /url: /osnee/outreach/agent
+          - link "Компании" [ref=e58] [cursor=pointer]:
+            - /url: /osnee/companies
+          - link "Очередь" [ref=e64] [cursor=pointer]:
+            - /url: /osnee/outreach/queue
+        - generic [ref=e69]:
+          - paragraph [ref=e70]: CRM
+          - link "Лиды" [ref=e71] [cursor=pointer]:
+            - /url: /osnee/leads
+          - link "Кампании" [ref=e78] [cursor=pointer]:
+            - /url: /osnee/campaigns
+          - link "Проекты" [ref=e83] [cursor=pointer]:
+            - /url: /osnee/projects
+          - link "Финансы" [ref=e88] [cursor=pointer]:
+            - /url: /osnee/finance
+        - generic [ref=e93]:
+          - paragraph [ref=e94]: СИСТЕМА
+          - link "Контент" [ref=e95] [cursor=pointer]:
+            - /url: /osnee/content
+          - link "Настройки" [ref=e99] [cursor=pointer]:
+            - /url: /osnee/settings
+      - button "Свернуть меню" [ref=e105] [cursor=pointer]:
+        - generic [ref=e108]: Свернуть
+    - main [ref=e109]:
+      - generic [ref=e112]:
+        - generic [ref=e114]:
+          - generic [ref=e119]:
+            - heading "Дашборд" [level=1] [ref=e120]
+            - paragraph [ref=e121]: Общая аналитика
+          - generic [ref=e122]:
+            - generic [ref=e123]: Июнь 2026
+            - button "Отчёт" [ref=e127] [cursor=pointer]
+        - main [ref=e130]:
+          - generic [ref=e131]:
+            - generic [ref=e132]:
+              - generic [ref=e133]: Всего лидов
+              - paragraph [ref=e141]: "0"
+              - generic [ref=e142]:
+                - generic [ref=e143]: 18%
+                - generic [ref=e147]: за месяц
+            - generic [ref=e148]:
+              - generic [ref=e149]: Активных кампаний
+              - paragraph [ref=e155]: "0"
+              - generic [ref=e156]:
+                - generic [ref=e157]: 33%
+                - generic [ref=e161]: за квартал
+            - generic [ref=e162]:
+              - generic [ref=e163]: Компаний в базе
+              - paragraph [ref=e170]: "0"
+              - generic [ref=e171]:
+                - generic [ref=e172]: 5%
+                - generic [ref=e176]: за месяц
+            - generic [ref=e177]:
+              - generic [ref=e178]: Конверсия в сделку
+              - paragraph [ref=e184]: 0%
+              - generic [ref=e185]:
+                - generic [ref=e186]: 2%
+                - generic [ref=e190]: к прошлому кв.
+          - generic [ref=e191]:
+            - generic [ref=e192]:
+              - generic [ref=e197]:
+                - heading "Общая сводка" [level=2] [ref=e198]
+                - paragraph [ref=e199]: Ключевые показатели системы
+              - generic [ref=e200]:
+                - generic [ref=e201]:
+                  - paragraph [ref=e202]: Общий pipeline
+                  - paragraph [ref=e203]: 0 ₽
+                  - generic [ref=e204]:
+                    - generic [ref=e205]: +12%
+                    - generic [ref=e209]: за месяц
+                - generic [ref=e211]:
+                  - paragraph [ref=e212]: Выиграно
+                  - paragraph [ref=e213]: 0 ₽
+                  - paragraph [ref=e214]: 0 сделок закрыто
+                - generic [ref=e216]:
+                  - paragraph [ref=e217]: Освоение бюджета
+                  - paragraph [ref=e218]: 0%
+                  - generic [ref=e221]:
+                    - generic [ref=e222]: 0 ₽
+                    - generic [ref=e223]: 0 ₽
+              - generic [ref=e224]:
+                - generic [ref=e230]:
+                  - paragraph [ref=e231]: "0"
+                  - paragraph [ref=e232]: Активных кампаний
+                - generic [ref=e239]:
+                  - paragraph [ref=e240]: "0"
+                  - paragraph [ref=e241]: Всего компаний
+                - generic [ref=e249]:
+                  - paragraph [ref=e250]: "0"
+                  - paragraph [ref=e251]: Всего лидов
+                - generic [ref=e257]:
+                  - paragraph [ref=e258]: 0%
+                  - paragraph [ref=e259]: Конверсия
+            - generic [ref=e260]:
+              - generic [ref=e265]:
+                - heading "Быстрые действия" [level=3] [ref=e266]
+                - paragraph [ref=e267]: Навигация по разделам
+              - generic [ref=e268]:
+                - button "Все лиды" [ref=e269] [cursor=pointer]
+                - button "Кампании" [ref=e275] [cursor=pointer]
+                - button "Компании" [ref=e279] [cursor=pointer]
+                - button "Brain HUD" [ref=e284] [cursor=pointer]
+              - generic [ref=e288]:
+                - generic [ref=e289]: Текущий квартал
+                - paragraph [ref=e294]: 0 ₽
+                - paragraph [ref=e295]: Активный бюджет
+          - generic [ref=e296]:
+            - generic [ref=e298]:
+              - generic [ref=e299]:
+                - generic [ref=e304]:
+                  - heading "Воронка лидов" [level=3] [ref=e305]
+                  - paragraph [ref=e306]: Распределение по этапам
+                - generic [ref=e307]: 0 всего
+              - generic [ref=e308]:
+                - generic [ref=e310]:
+                  - generic [ref=e311]: Новые
+                  - generic [ref=e312]:
+                    - text: "0"
+                    - generic [ref=e313]: (0%)
+                - generic [ref=e316]:
+                  - generic [ref=e317]: На связи
+                  - generic [ref=e318]:
+                    - text: "0"
+                    - generic [ref=e319]: (0%)
+                - generic [ref=e322]:
+                  - generic [ref=e323]: Квалиф.
+                  - generic [ref=e324]:
+                    - text: "0"
+                    - generic [ref=e325]: (0%)
+                - generic [ref=e328]:
+                  - generic [ref=e329]: Предлож.
+                  - generic [ref=e330]:
+                    - text: "0"
+                    - generic [ref=e331]: (0%)
+                - generic [ref=e334]:
+                  - generic [ref=e335]: Успешно
+                  - generic [ref=e336]:
+                    - text: "0"
+                    - generic [ref=e337]: (0%)
+            - generic [ref=e348]:
+              - heading "Топ компаний" [level=3] [ref=e349]
+              - paragraph [ref=e350]: По количеству активных лидов
+            - generic [ref=e359]:
+              - heading "Последняя активность" [level=3] [ref=e360]
+              - paragraph [ref=e361]: Новые лиды и обновления
+          - generic [ref=e363]:
+            - generic [ref=e365]:
+              - heading "Активные кампании" [level=2] [ref=e369]
+              - generic [ref=e370]: "0"
+            - generic [ref=e371]:
+              - paragraph [ref=e375]: Нет активных кампаний
+              - paragraph [ref=e376]: Создайте кампанию в Outreach Hub

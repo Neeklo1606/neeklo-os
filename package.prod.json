@@ -1,0 +1,12 @@
+{
+  "name": "osnee",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

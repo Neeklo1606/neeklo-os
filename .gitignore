@@ -1,0 +1,39 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+backups/
+.env
+.env.local
+.env.*.local
+data/companies.json
+data/companies.json.tmp
+data/leads.json
+data/leads.json.tmp
+data/agent-sessions.json
+data/agent-sessions.json.tmp
+
+# Contains plaintext admin-scope neekloai.ru API key — never commit
+NEEKLO_USER_GUIDE.ru*.md
+scripts/neeklo/.api_key
+scripts/neeklo/CREDENTIALS.txt
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

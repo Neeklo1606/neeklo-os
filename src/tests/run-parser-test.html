@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Parser API Test — NEEKLO OS</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family:
+          Inter,
+          system-ui,
+          -apple-system,
+          sans-serif;
+        background: #f4f6fb;
+        color: #111;
+        min-height: 100dvh;
+        padding: 24px;
+      }
+      .wrap {
+        max-width: 960px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.25rem;
+        margin: 0 0 8px;
+      }
+      p {
+        margin: 0 0 16px;
+        color: #555;
+        font-size: 0.875rem;
+      }
+      button {
+        appearance: none;
+        border: none;
+        border-radius: 10px;
+        background: #2563eb;
+        color: #fff;
+        font-size: 0.9375rem;
+        font-weight: 600;
+        padding: 10px 18px;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      button:hover:not(:disabled) {
+        background: #1d4ed8;
+      }
+      pre {
+        margin-top: 16px;
+        background: #0f172a;
+        color: #e2e8f0;
+        border-radius: 12px;
+        padding: 16px;
+        font-size: 12px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 70dvh;
+        overflow: auto;
+      }
+      .status {
+        margin-top: 12px;
+        font-size: 0.8125rem;
+        color: #64748b;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Parser API Test</h1>
+      <p>
+        Read-only tests: health → Yandex + 2GIS search → smart org URLs → card phones (~10–20 min).
+      </p>
+      <button type="button" id="run">▶ Run Parser Test</button>
+      <div class="status" id="status"></div>
+      <pre id="log"></pre>
+    </div>
+    <script type="module">
+      import { runParserTest } from './parser-test.ts';
+
+      const btn = document.getElementById('run');
+      const logEl = document.getElementById('log');
+      const statusEl = document.getElementById('status');
+      const lines = [];
+
+      function appendLine(args) {
+        const text = args
+          .map((a) => (typeof a === 'string' ? a : JSON.stringify(a, null, 2)))
+          .join(' ');
+        lines.push(text);
+        logEl.textContent = lines.join('\n');
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        lines.length = 0;
+        logEl.textContent = '';
+        statusEl.textContent = 'Running… (poll every 8s, timeout 15 min per job)';
+
+        const logger = (...args) => appendLine(args);
+
+        try {
+          await runParserTest(logger);
+          statusEl.textContent = 'Done.';
+        } catch (err) {
+          appendLine(['❌ Fatal error:', err instanceof Error ? err.message : String(err)]);
+          statusEl.textContent = 'Failed.';
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+@theme {
+  /* Фоны */
+  --color-bento-base: #F5F4F0;
+  --color-bento-white: #FFFFFF;
+  --color-bento-dark: #0C0C10;
+
+  /* Семантические алиасы */
+  --color-page: #F5F4F0;
+  --color-card: #FFFFFF;
+  --color-muted: #F1F5F9;
+  --color-border: #E2E8F0;
+  --color-foreground: #0C0C10;
+  --color-muted-foreground: #6B7280;
+
+  /* Карточки — по смыслу */
+  /* card-purple kept as alias for legacy class names */
+  --color-card-purple: #EBF3FF;
+  --color-card-blue: #EBF3FF;
+  --color-card-green: #E8FDF4;
+  --color-card-amber: #FFF8EC;
+  --color-card-red: #FFF1F2;
+  --color-card-slate: #F1F5F9;
+
+  /* Акценты */
+  --color-accent: #2563EB;
+  --color-accent-bright: #3B82F6;
+  --color-accent-green: #059669;
+  --color-accent-amber: #D97706;
+  --color-accent-red: #DC2626;
+  --color-accent-blue: #2563EB;
+
+  /* Типографика */
+  --color-text-primary: #0C0C10;
+  --color-text-body: #3D3D4E;
+  --color-text-muted: #8B8B9A;
+  --color-text-subtle: #6B7280;
+
+  /* Шрифты */
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-heading: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+
+  /* Статусы кампаний и компаний */
+  --color-campaign-active: #059669;
+  --color-campaign-paused: #D97706;
+  --color-campaign-draft: #6B7280;
+  --color-campaign-completed: #3B82F6;
+  --color-company-active: #059669;
+  --color-company-inactive: #6B7280;
+  --color-company-lead: #D97706;
+}
+
+body {
+  margin: 0;
+  background-color: #F5F4F0;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100dvh;
+}
+
+/* Typography utility classes */
+.font-heading {
+  font-family: var(--font-heading);
+}
+
+/* Display / hero numbers */
+.text-display {
+  font-family: var(--font-heading);
+  font-size: clamp(2.5rem, 5vw, 5rem);
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+}
+
+/* Font display utility for inline use */
+.font-display {
+  font-family: var(--font-heading);
+  font-weight: 900;
+  letter-spacing: -0.03em;
+}
+
+/* Heading 1 / page titles */
+.text-h1 {
+  font-family: var(--font-heading);
+  font-size: clamp(1.5rem, 3vw, 2.375rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+}
+
+/* Heading 2 / card titles */
+.text-h2 {
+  font-family: var(--font-heading);
+  font-size: clamp(1rem, 1.5vw, 1.375rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
