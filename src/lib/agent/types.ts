@@ -1,10 +1,23 @@
 export type ChatRole = 'user' | 'assistant';
 
+export type AgentActionType =
+  | 'radar.addChannel'
+  | 'radar.check'
+  | 'radar.newSignals'
+  | 'cartographer.run'
+  | 'companies.top';
+
+export interface AgentAction {
+  type: AgentActionType;
+  params: Record<string, unknown>;
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
   timestamp: string;
+  action?: AgentAction | null;
 }
 
 export interface PlannedJob {
@@ -50,6 +63,7 @@ export interface AgentChatResponse {
   runId?: string | null;
   executed?: ExecutedJob[];
   error?: string;
+  action?: AgentAction | null;
 }
 
 export interface RunPlanStatus {

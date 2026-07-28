@@ -4,9 +4,9 @@ export interface CsvColumn<T> {
   format?: (value: T[keyof T], item: T) => string;
 }
 
-function escapeCsvValue(value: unknown): string {
+function escapeCsvValue(value: unknown, delimiter: string): string {
   const str = value == null ? '' : String(value);
-  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+  if (str.includes(delimiter) || str.includes('"') || str.includes('\n')) {
     return `"${str.replace(/"/g, '""')}"`;
   }
   return str;
@@ -16,16 +16,18 @@ export function exportToCsv<T>(
   data: T[],
   columns: CsvColumn<T>[],
   filename: string,
+  opts: { delimiter?: string } = {},
 ) {
-  const header = columns.map((c) => escapeCsvValue(c.label)).join(',');
+  const delimiter = opts.delimiter ?? ',';
+  const header = columns.map((c) => escapeCsvValue(c.label, delimiter)).join(delimiter);
   const rows = data.map((item) =>
     columns
       .map((col) => {
         const raw = item[col.key];
         const value = col.format ? col.format(raw, item) : raw;
-        return escapeCsvValue(value);
+        return escapeCsvValue(value, delimiter);
       })
-      .join(','),
+      .join(delimiter),
   );
 
   const bom = '\uFEFF';

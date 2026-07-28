@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import cron from 'node-cron';
 import { loadEnvFile } from './load-env.mjs';
 import { loadConfig } from './config.mjs';
 import { createParserClient } from './parser.mjs';
@@ -10,6 +11,11 @@ import { executeJobPlan } from './maps-pipeline.mjs';
 import { inferNicheFromQuery } from './agent-prompt.mjs';
 import { validateOrgsWithAgent } from './validate-orgs.mjs';
 import { createRun, getRun, patchRun } from './run-store.mjs';
+import { runRadarCheck } from './jobs/radar-check.mjs';
+import { enrichCompany } from './enrich-company.mjs';
+import { scoreCompany } from './score-company.mjs';
+import { createCartographerRun, getCartographerRun } from './cartographer-store.mjs';
+import { runCartographer } from './jobs/cartographer-run.mjs';
 import {
   listCompanies,
   getCompany,
@@ -41,6 +47,19 @@ import {
   updateSession,
   deleteSession,
 } from './agent-sessions-db.mjs';
+import {
+  listChannels,
+  createChannel,
+  createChannels,
+  updateChannel as updateRadarChannel,
+  deleteChannel,
+  listKeywords,
+  createKeyword,
+  deleteKeyword,
+  listSignals,
+  getSignal,
+  updateSignal,
+} from './radar-db.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const DIST_DIR = join(__dirname, '..', 'dist');
@@ -92,6 +111,21 @@ function serveStatic(res, filePath) {
   return true;
 }
 
+/**
+ * scoreCompany() returns { score, breakdown } per its own contract; the
+ * Company record (src/data/mock.ts) stores the same data under
+ * `score_breakdown` — this is the one place that translates between them.
+ * @param {ReturnType<typeof scoreCompany>} result
+ */
+function scoreFields(result) {
+  return { score: result.score, score_breakdown: result.breakdown };
+}
+
+/** @param {Record<string, unknown>} company */
+function withScore(company) {
+  return { ...company, ...scoreFields(scoreCompany(company)) };
+}
+
 function configStatus(config) {
   return {
     parserKey: Boolean(config.neekloApiKey),
@@ -99,6 +133,31 @@ function configStatus(config) {
     model: config.openrouterModel,
     parserBase: config.neekloApiBase,
   };
+}
+
+const RADAR_CRON_EXPRESSION = '*/15 * * * *';
+const RADAR_INTERVAL_MS = 15 * 60 * 1000;
+// In-memory only — deliberately not persisted, mirrors run-store.mjs's approach
+// for the maps job-plan runs. nextRunAt is an approximation (lastRun + 15min),
+// not the exact cron wall-clock boundary '*/15 * * * *' actually fires on.
+const radarState = { lastRunAt: null, nextRunAt: null, running: false };
+
+/** @param {{ manual?: boolean }} [opts] */
+async function runRadarCheckGuarded(opts = {}) {
+  if (radarState.running) {
+    console.log('[radar] skip — previous run still in progress');
+    return;
+  }
+  radarState.running = true;
+  try {
+    await runRadarCheck(opts);
+  } catch (err) {
+    console.error('[radar] run failed:', err instanceof Error ? err.message : err);
+  } finally {
+    radarState.running = false;
+    radarState.lastRunAt = new Date().toISOString();
+    radarState.nextRunAt = new Date(Date.now() + RADAR_INTERVAL_MS).toISOString();
+  }
 }
 
 function startJobPlanAsync(parser, jobs, opts) {
@@ -174,6 +233,133 @@ async function main() {
       if (path === '/api/agent/health' && req.method === 'GET') {
         const health = await parser.health();
         sendJson(res, 200, { success: true, health });
+        return;
+      }
+
+      if (path === '/api/radar/status' && req.method === 'GET') {
+        sendJson(res, 200, { success: true, ...radarState });
+        return;
+      }
+
+      if (path === '/api/radar/check-now' && req.method === 'POST') {
+        if (radarState.running) {
+          sendJson(res, 200, { success: true, started: false, reason: 'already running' });
+          return;
+        }
+        // Fire-and-forget — a real run (Telegram fetch + classify per channel)
+        // can take minutes; the client polls /api/radar/status for `running`
+        // and refetches signals once it flips back to false.
+        runRadarCheckGuarded({ manual: true }).catch(console.error);
+        sendJson(res, 202, { success: true, started: true });
+        return;
+      }
+
+      // ——— Radar: signals ———
+      if (path === '/api/radar/signals' && req.method === 'GET') {
+        const allSignals = listSignals({
+          channel: url.searchParams.get('channel') ?? undefined,
+          status: url.searchParams.get('status') ?? undefined,
+        });
+        const limitParam = Number(url.searchParams.get('limit'));
+        const signals = Number.isInteger(limitParam) && limitParam > 0 ? allSignals.slice(0, limitParam) : allSignals;
+        sendJson(res, 200, { success: true, signals, total: allSignals.length });
+        return;
+      }
+
+      const radarSignalToLeadMatch = path.match(/^\/api\/radar\/signals\/([^/]+)\/to-lead$/);
+      if (radarSignalToLeadMatch && req.method === 'POST') {
+        const signal = getSignal(decodeURIComponent(radarSignalToLeadMatch[1]));
+        if (!signal) {
+          sendJson(res, 404, { success: false, error: 'Signal not found' });
+          return;
+        }
+        if (signal.leadId) {
+          sendJson(res, 409, { success: false, error: 'Signal already converted to a lead', leadId: signal.leadId });
+          return;
+        }
+        const lead = createLead({
+          name: `Telegram-сигнал: @${signal.channel}`,
+          company: `@${signal.channel}`,
+          email: '',
+          phone: '',
+          status: 'new',
+          priority: 'medium',
+          value: 0,
+          assignedTo: '',
+          tags: Array.isArray(signal.matchedKeywords) ? signal.matchedKeywords : [],
+          avatar: '',
+        });
+        updateSignal(signal.id, { leadId: lead.id });
+        sendJson(res, 201, { success: true, lead });
+        return;
+      }
+
+      const radarSignalMatch = path.match(/^\/api\/radar\/signals\/([^/]+)$/);
+      if (radarSignalMatch && req.method === 'PATCH') {
+        const body = await readJsonBody(req);
+        const signal = updateSignal(decodeURIComponent(radarSignalMatch[1]), body);
+        sendJson(res, 200, { success: true, signal });
+        return;
+      }
+
+      // ——— Radar: channels ———
+      if (path === '/api/radar/channels' && req.method === 'GET') {
+        const channels = listChannels();
+        sendJson(res, 200, { success: true, channels, total: channels.length });
+        return;
+      }
+
+      if (path === '/api/radar/channels/bulk' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const lines = typeof body.usernames === 'string' ? body.usernames.split('\n') : body.usernames;
+        const { created, skipped } = createChannels(Array.isArray(lines) ? lines : []);
+        sendJson(res, 201, { success: true, created, skipped, total: created.length });
+        return;
+      }
+
+      if (path === '/api/radar/channels' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const channel = createChannel(body);
+        sendJson(res, 201, { success: true, channel });
+        return;
+      }
+
+      const radarChannelMatch = path.match(/^\/api\/radar\/channels\/([^/]+)$/);
+      if (radarChannelMatch) {
+        const channelId = decodeURIComponent(radarChannelMatch[1]);
+
+        if (req.method === 'PATCH') {
+          const body = await readJsonBody(req);
+          const channel = updateRadarChannel(channelId, body);
+          sendJson(res, 200, { success: true, channel });
+          return;
+        }
+
+        if (req.method === 'DELETE') {
+          const result = deleteChannel(channelId);
+          sendJson(res, 200, { success: true, ...result });
+          return;
+        }
+      }
+
+      // ——— Radar: keywords ———
+      if (path === '/api/radar/keywords' && req.method === 'GET') {
+        const keywords = listKeywords();
+        sendJson(res, 200, { success: true, keywords, total: keywords.length });
+        return;
+      }
+
+      if (path === '/api/radar/keywords' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const keyword = createKeyword(body);
+        sendJson(res, 201, { success: true, keyword });
+        return;
+      }
+
+      const radarKeywordMatch = path.match(/^\/api\/radar\/keywords\/([^/]+)$/);
+      if (radarKeywordMatch && req.method === 'DELETE') {
+        const result = deleteKeyword(decodeURIComponent(radarKeywordMatch[1]));
+        sendJson(res, 200, { success: true, ...result });
         return;
       }
 
@@ -281,7 +467,9 @@ async function main() {
       if (path === '/api/companies/bulk' && req.method === 'POST') {
         const body = await readJsonBody(req);
         const items = Array.isArray(body.companies) ? body.companies : [];
-        const { created, skipped } = createCompanies(items);
+        // Scored on creation — covers every bulk company-creation path
+        // (parsing pipelines included), scoring is cheap/local (no LLM).
+        const { created, skipped } = createCompanies(items.map(withScore));
         sendJson(res, 201, {
           success: true,
           created,
@@ -293,8 +481,122 @@ async function main() {
 
       if (path === '/api/companies' && req.method === 'POST') {
         const body = await readJsonBody(req);
-        const company = createCompany(body);
+        const company = createCompany(withScore(body));
         sendJson(res, 201, { success: true, company });
+        return;
+      }
+
+      if (path === '/api/companies/enrich-batch' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const ids = (Array.isArray(body.ids) ? body.ids : []).slice(0, 20);
+        const enriched = [];
+        const failed = [];
+
+        for (let i = 0; i < ids.length; i += 1) {
+          const id = ids[i];
+          const company = getCompany(id);
+          if (!company) {
+            failed.push({ id, error: 'Company not found' });
+          } else {
+            try {
+              const enrichment = await enrichCompany(parser, openrouter, company);
+              const scored = scoreFields(scoreCompany({ ...company, ...enrichment }));
+              const updated = updateCompany(id, { ...enrichment, ...scored });
+              enriched.push(updated);
+            } catch (e) {
+              failed.push({ id, error: e instanceof Error ? e.message : 'Enrichment failed' });
+            }
+          }
+          if (i < ids.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          }
+        }
+
+        sendJson(res, 200, { success: true, enriched, failed });
+        return;
+      }
+
+      const companyEnrichMatch = path.match(/^\/api\/companies\/([^/]+)\/enrich$/);
+      if (companyEnrichMatch && req.method === 'POST') {
+        const companyId = decodeURIComponent(companyEnrichMatch[1]);
+        const company = getCompany(companyId);
+        if (!company) {
+          sendJson(res, 404, { success: false, error: 'Company not found' });
+          return;
+        }
+        const enrichment = await enrichCompany(parser, openrouter, company);
+        const scored = scoreFields(scoreCompany({ ...company, ...enrichment }));
+        const updated = updateCompany(companyId, { ...enrichment, ...scored });
+        sendJson(res, 200, { success: true, company: updated });
+        return;
+      }
+
+      const companyScoreAllMatch = path === '/api/companies/score-all' && req.method === 'POST';
+      if (companyScoreAllMatch) {
+        const companies = listCompanies();
+        const scored = companies.map((c) => updateCompany(c.id, scoreFields(scoreCompany(c))));
+        sendJson(res, 200, { success: true, scored, total: scored.length });
+        return;
+      }
+
+      const companyScoreMatch = path.match(/^\/api\/companies\/([^/]+)\/score$/);
+      if (companyScoreMatch && req.method === 'POST') {
+        const companyId = decodeURIComponent(companyScoreMatch[1]);
+        const company = getCompany(companyId);
+        if (!company) {
+          sendJson(res, 404, { success: false, error: 'Company not found' });
+          return;
+        }
+        const updated = updateCompany(companyId, scoreFields(scoreCompany(company)));
+        sendJson(res, 200, { success: true, company: updated });
+        return;
+      }
+
+      // ——— Cartographer (deterministic 2GIS pipeline — see server/jobs/cartographer-run.mjs) ———
+      if (path === '/api/cartographer/run' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const niche = String(body?.niche ?? '').trim();
+        const region = String(body?.region ?? '').trim();
+        const limit = [10, 25, 50].includes(Number(body?.limit)) ? Number(body.limit) : 10;
+        const enrich = Boolean(body?.enrich);
+
+        if (!niche || !region) {
+          sendJson(res, 400, { success: false, error: 'niche and region are required' });
+          return;
+        }
+
+        const campaign = createCampaign({
+          name: `${niche} — ${region} (2ГИС)`,
+          description: `Картограф: сбор ${limit} компаний по нише «${niche}» в ${region}${enrich ? ' с обогащением и скорингом' : ''}`,
+          status: 'active',
+          budget: 0,
+          spent: 0,
+          startDate: new Date().toISOString(),
+          endDate: null,
+          leadsGenerated: 0,
+          conversions: 0,
+          channels: ['2gis'],
+          niche,
+          region,
+        });
+
+        const runId = createCartographerRun({ campaignId: campaign.id, niche, region });
+        runCartographer(parser, openrouter, { runId, campaignId: campaign.id, niche, region, limit, enrich }).catch(
+          (err) => console.error('[cartographer] run failed:', err),
+        );
+
+        sendJson(res, 202, { success: true, runId, campaignId: campaign.id });
+        return;
+      }
+
+      const cartographerRunMatch = path.match(/^\/api\/cartographer\/run\/([^/]+)$/);
+      if (cartographerRunMatch && req.method === 'GET') {
+        const run = getCartographerRun(decodeURIComponent(cartographerRunMatch[1]));
+        if (!run) {
+          sendJson(res, 404, { success: false, error: 'Run not found' });
+          return;
+        }
+        sendJson(res, 200, { success: true, ...run });
         return;
       }
 
@@ -508,6 +810,7 @@ async function main() {
           niche,
           runId,
           executed: [],
+          action: plan.action ?? null,
         });
         return;
       }
@@ -542,7 +845,11 @@ async function main() {
     console.log(`  Campaigns DB: ${process.env.CAMPAIGNS_DATABASE_PATH ?? './data/campaigns.json'}`);
     console.log(`  Agent chats:  ${process.env.AGENT_SESSIONS_DATABASE_PATH ?? './data/agent-sessions.json'}`);
     console.log(`  Static: ${existsSync(DIST_DIR) ? 'dist/' : 'none (run npm run build)'}`);
+    console.log(`  Radar DB: ${process.env.RADAR_DATABASE_PATH ?? './data/radar.json'} (every 15min + 30s after start)`);
   });
+
+  cron.schedule(RADAR_CRON_EXPRESSION, () => runRadarCheckGuarded().catch(console.error));
+  setTimeout(() => runRadarCheckGuarded().catch(console.error), 30_000);
 }
 
 main().catch((err) => {

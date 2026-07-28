@@ -2,7 +2,15 @@ import { AGENT_SYSTEM_PROMPT, parseAgentJson } from './agent-prompt.mjs';
 
 /** @param {import('./config.mjs').AppConfig} config */
 export function createOpenRouterClient(config) {
-  async function chat(messages) {
+  /**
+   * @param {Array<{ role: string, content: string }>} messages
+   * @param {{ temperature?: number, maxTokens?: number, systemPrompt?: string | null }} [opts]
+   * systemPrompt defaults to the job-planning AGENT_SYSTEM_PROMPT for backward
+   * compat with existing callers (extract-entities.mjs, validate-orgs.mjs);
+   * pass `null` to omit it entirely (e.g. classify-intent.mjs's one-off prompt).
+   */
+  async function chat(messages, opts = {}) {
+    const { temperature = 0.2, maxTokens = 2048, systemPrompt = AGENT_SYSTEM_PROMPT } = opts;
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -13,9 +21,9 @@ export function createOpenRouterClient(config) {
       },
       body: JSON.stringify({
         model: config.openrouterModel,
-        messages: [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, ...messages],
-        temperature: 0.2,
-        max_tokens: 2048,
+        messages: systemPrompt ? [{ role: 'system', content: systemPrompt }, ...messages] : messages,
+        temperature,
+        max_tokens: maxTokens,
       }),
     });
 
@@ -32,11 +40,16 @@ export function createOpenRouterClient(config) {
   async function plan(messages) {
     const { content } = await chat(messages);
     const parsed = parseAgentJson(content);
+    const action =
+      parsed.action && typeof parsed.action === 'object' && typeof parsed.action.type === 'string'
+        ? { type: parsed.action.type, params: parsed.action.params ?? {} }
+        : null;
     return {
       message: typeof parsed.message === 'string' ? parsed.message : content,
       jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
       autoRun: Boolean(parsed.autoRun),
       niche: typeof parsed.niche === 'string' ? parsed.niche : null,
+      action,
     };
   }
 

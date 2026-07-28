@@ -1,4 +1,4 @@
-import { useMemo, type ComponentType, type ReactNode } from 'react';
+import { useMemo, useState, type ComponentType, type ReactNode } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Phone,
@@ -14,6 +14,8 @@ import {
   Check,
   X,
   Zap,
+  Sparkles,
+  Loader2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { SOURCE_CONFIG, type Company, type CompanyScoreBreakdown, type CompanyStatus } from '../data/mock';
@@ -32,20 +34,6 @@ const FUNNEL_STAGES: { key: CompanyStatus; label: string }[] = [
   { key: 'lead', label: 'В CRM' },
 ];
 
-const SCORE_CRITERIA: {
-  key: keyof CompanyScoreBreakdown;
-  name: string;
-  description: string;
-  points: number;
-}[] = [
-  { key: 'no_online_booking', name: 'Нет онлайн-записи', description: 'Теряет заявки ночью', points: 25 },
-  { key: 'high_rating', name: 'Рейтинг 4.5+', description: 'Клиенты доверяют', points: 20 },
-  { key: 'has_website', name: 'Есть сайт', description: 'Точка интеграции', points: 15 },
-  { key: 'no_telegram', name: 'Нет Telegram', description: 'Не автоматизирован', points: 15 },
-  { key: 'revenue_10m_plus', name: 'Выручка от 10М ₽', description: 'Есть бюджет', points: 12 },
-  { key: 'reviews_50_plus', name: '50+ отзывов', description: 'Активный бизнес', points: 5 },
-];
-
 function companyScore(company: Company): number {
   if (company.score != null) return company.score;
   if (company.icpScore != null) return company.icpScore;
@@ -53,28 +41,21 @@ function companyScore(company: Company): number {
   return 0;
 }
 
+// Real breakdown shape comes straight from server/score-company.mjs's
+// scoreCompany() — no static criteria list here anymore, we just render
+// whatever criteria the backend actually scored.
 function resolveBreakdown(company: Company): CompanyScoreBreakdown {
-  if (company.score_breakdown) return company.score_breakdown;
-  const score = companyScore(company);
-  if (score > 60) {
-    return {
-      no_online_booking: true,
-      high_rating: true,
-      has_website: true,
-      no_telegram: true,
-      revenue_10m_plus: true,
-      reviews_50_plus: true,
-    };
-  }
-  return {
-    no_online_booking: true,
-    high_rating: true,
-    has_website: true,
-    no_telegram: false,
-    revenue_10m_plus: false,
-    reviews_50_plus: false,
-  };
+  return company.score_breakdown ?? {};
 }
+
+const DETECTED_SIGNALS: { key: keyof Company; label: string }[] = [
+  { key: 'hasOnlineBooking', label: 'Онлайн-запись' },
+  { key: 'hasContactForm', label: 'Форма заявки' },
+  { key: 'hasAnalytics', label: 'Аналитика (метрика/gtag)' },
+  { key: 'hasAds', label: 'Реклама (RTB/adfox/utm)' },
+  { key: 'socialVk', label: 'Есть VK' },
+  { key: 'socialTelegram', label: 'Есть Telegram-канал' },
+];
 
 function funnelIndex(status: CompanyStatus): number {
   const idx = FUNNEL_STAGES.findIndex((s) => s.key === status);
@@ -129,6 +110,8 @@ export function CompanyDetailPage() {
   const navigate = useNavigate();
   const companies = useCompaniesStore((s) => s.companies);
   const updateStatus = useCompaniesStore((s) => s.updateStatus);
+  const enrichCompany = useCompaniesStore((s) => s.enrichCompany);
+  const [enriching, setEnriching] = useState(false);
 
   const companyIndex = useMemo(
     () => companies.findIndex((c) => c.id === companyId),
@@ -172,6 +155,18 @@ export function CompanyDetailPage() {
 
   const goNext = () => {
     if (companyIndex < companies.length - 1) navigate(`/companies/${companies[companyIndex + 1].id}`);
+  };
+
+  const handleReEnrich = async () => {
+    setEnriching(true);
+    try {
+      await enrichCompany(company.id);
+      toast.success('Сайт проверен заново');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Не удалось обогатить компанию');
+    } finally {
+      setEnriching(false);
+    }
   };
 
   return (
@@ -282,13 +277,24 @@ export function CompanyDetailPage() {
               </ContactRow>
             </div>
 
-            {/* Score */}
+            {/* Аудит — score breakdown + AI audit + detected signals */}
             <div className="rounded-2xl border border-border bg-card p-6">
               <div className="flex items-center justify-between">
                 <h2 className="text-[10px] font-medium uppercase tracking-widest text-text-muted">
-                  Скоринг
+                  Аудит
                 </h2>
-                <ScoreBadge score={score} size="lg" />
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleReEnrich}
+                    disabled={enriching}
+                    className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-border px-2.5 text-xs font-medium text-text-body transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {enriching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                    Обогатить заново
+                  </button>
+                  <ScoreBadge score={score} size="lg" />
+                </div>
               </div>
 
               <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
@@ -299,33 +305,67 @@ export function CompanyDetailPage() {
               </div>
 
               <div className="mt-5 space-y-0">
-                {SCORE_CRITERIA.map((criterion) => {
-                  const met = Boolean(breakdown[criterion.key]);
-                  return (
-                    <div
-                      key={criterion.key}
-                      className="flex items-start gap-3 border-b border-border/40 py-3 last:border-0"
-                    >
-                      {met ? (
-                        <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-green-500" />
-                      ) : (
-                        <X className="mt-0.5 h-4 w-4 shrink-0 text-gray-300" />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[13px] font-medium text-text-primary">{criterion.name}</p>
-                        <p className="text-[11px] text-text-muted">{criterion.description}</p>
-                      </div>
-                      <span
-                        className={cn(
-                          'shrink-0 rounded-md px-2 py-0.5 text-xs font-medium',
-                          met ? 'bg-green-50 text-green-700' : 'bg-muted text-text-muted',
-                        )}
-                      >
-                        +{met ? criterion.points : 0}
-                      </span>
+                {Object.entries(breakdown).length === 0 && (
+                  <p className="py-3 text-[13px] text-text-muted">Скоринг ещё не рассчитан</p>
+                )}
+                {Object.entries(breakdown).map(([key, criterion]) => (
+                  <div
+                    key={key}
+                    className="flex items-start gap-3 border-b border-border/40 py-3 last:border-0"
+                  >
+                    {criterion.met ? (
+                      <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-green-500" />
+                    ) : (
+                      <X className="mt-0.5 h-4 w-4 shrink-0 text-gray-300" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[13px] font-medium text-text-primary">{criterion.label}</p>
                     </div>
-                  );
-                })}
+                    <span
+                      className={cn(
+                        'shrink-0 rounded-md px-2 py-0.5 text-xs font-medium',
+                        criterion.met ? 'bg-green-50 text-green-700' : 'bg-muted text-text-muted',
+                      )}
+                    >
+                      +{criterion.points}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {company.auditText && (
+                <div className="mt-5 rounded-xl border border-amber-100 bg-amber-50 p-4">
+                  <p className="font-mono text-[10px] uppercase tracking-widest text-amber-700/70">
+                    AI-аудит сайта
+                  </p>
+                  <p className="mt-2 text-[13px] leading-relaxed text-amber-800">{company.auditText}</p>
+                </div>
+              )}
+
+              <div className="mt-5 border-t border-border/40 pt-4">
+                <p className="mb-2 font-mono text-[10px] uppercase tracking-widest text-text-muted">
+                  Обнаруженные признаки
+                </p>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                  {DETECTED_SIGNALS.map(({ key, label }) => {
+                    const met = Boolean(company[key]);
+                    return (
+                      <div key={String(key)} className="flex items-center gap-2 py-0.5">
+                        {met ? (
+                          <CheckCircle className="h-3.5 w-3.5 shrink-0 text-green-500" />
+                        ) : (
+                          <X className="h-3.5 w-3.5 shrink-0 text-gray-300" />
+                        )}
+                        <span className={cn('text-[12px]', met ? 'text-text-primary' : 'text-text-muted')}>
+                          {label}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                {!company.enrichedAt && (
+                  <p className="mt-3 text-[12px] text-text-subtle">Сайт ещё не проверялся</p>
+                )}
               </div>
             </div>
           </div>

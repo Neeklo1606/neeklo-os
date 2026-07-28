@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useMemo, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Building2,
   CheckCircle2,
@@ -11,21 +11,76 @@ import {
   Wallet,
   Search,
   ChevronDown,
+  ChevronUp,
   Filter,
   Plus,
   Copy,
   Download,
+  Sparkles,
+  Loader2,
 } from 'lucide-react';
 import type { Company, CompanyStatus } from '../data/mock';
 import { SOURCE_CONFIG } from '../data/mock';
 import { StatusPill } from '../components/ui/StatusPill';
 import { BentoCard } from '../components/ui/BentoCard';
 import { Modal } from '../components/ui/Modal';
+import { ScoreBadge } from '../components/ui/ScoreBadge';
 import { useCompaniesStore } from '../lib/stores/companiesStore';
 import { useCopy } from '../hooks/useCopy';
 import { exportToCsv, type CsvColumn } from '../lib/exportCsv';
-import { formatDate } from '../lib/utils';
+import { cn, formatDate } from '../lib/utils';
 import { toast } from 'sonner';
+
+const STATUS_LABELS: Record<string, string> = {
+  active: 'Активна',
+  inactive: 'Неактивна',
+  lead: 'Лид',
+  new: 'Новый',
+  approved: 'Одобрено',
+  queued: 'В очереди',
+  sent: 'Отправлено',
+  replied: 'Ответил',
+  qualified: 'Квалифицирован',
+  skipped: 'Пропущен',
+};
+
+/* ---------- New detailed CSV export (semicolon delimiter + BOM for Excel/RU) ---------- */
+const detailedCsvColumns: CsvColumn<Company>[] = [
+  { key: 'name', label: 'Название' },
+  { key: 'industry', label: 'Ниша' },
+  { key: 'city', label: 'Регион' },
+  { key: 'phone', label: 'Телефон' },
+  { key: 'website', label: 'Сайт' },
+  { key: 'rating', label: 'Рейтинг' },
+  { key: 'reviewCount', label: 'Отзывы' },
+  { key: 'score', label: 'Score', format: (v) => (v == null ? '' : String(v)) },
+  { key: 'hasAds', label: 'Реклама', format: (v) => (v ? 'да' : 'нет') },
+  { key: 'hasOnlineBooking', label: 'Онлайн-запись', format: (v) => (v ? 'да' : 'нет') },
+  { key: 'hasAnalytics', label: 'Аналитика', format: (v) => (v ? 'да' : 'нет') },
+  { key: 'auditText', label: 'Аудит', format: (v) => (v ? String(v) : '') },
+  { key: 'status', label: 'Статус', format: (v) => STATUS_LABELS[v as CompanyStatus] ?? String(v) },
+  { key: 'createdAt', label: 'Дата', format: (v) => (v ? formatDate(String(v)) : '') },
+];
+
+function slugifyForFilename(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-zа-яё0-9]+/gi, '-')
+    .replace(/^-+|-+$/g, '') || 'все';
+}
+
+/** {niche} in the filename — the shared industry if the exported set has exactly
+ * one, otherwise a generic "все" token (a multi-niche export has no single answer). */
+function nicheTokenFor(items: Company[]): string {
+  const niches = new Set(items.map((c) => c.industry).filter(Boolean));
+  return slugifyForFilename(niches.size === 1 ? [...niches][0] : 'все');
+}
+
+function exportCompaniesCsv(items: Company[]) {
+  const date = new Date().toISOString().slice(0, 10);
+  const filename = `neeklo-companies-${nicheTokenFor(items)}-${date}.csv`;
+  exportToCsv(items, detailedCsvColumns, filename, { delimiter: ';' });
+}
 
 function SourceBadge({ source }: { source: string }) {
   const config = SOURCE_CONFIG[source as keyof typeof SOURCE_CONFIG] ?? SOURCE_CONFIG.manual;
@@ -42,28 +97,42 @@ function SourceBadge({ source }: { source: string }) {
   );
 }
 
-/* ---------- Column definitions for CSV export ---------- */
-const csvColumns: CsvColumn<Company>[] = [
-  { key: 'name', label: 'Компания' },
-  { key: 'industry', label: 'Отрасль' },
-  { key: 'city', label: 'Город' },
-  { key: 'status', label: 'Статус', format: (v) => ({
-    active: 'Активна',
-    inactive: 'Неактивна',
-    lead: 'Лид',
-    new: 'Новый',
-    approved: 'Одобрено',
-    queued: 'В очереди',
-    sent: 'Отправлено',
-    replied: 'Ответил',
-    qualified: 'Квалифицирован',
-    skipped: 'Пропущен',
-  })[v as CompanyStatus] ?? String(v) },
-  { key: 'employees', label: 'Сотрудников' },
-  { key: 'revenue', label: 'Выручка' },
-  { key: 'email', label: 'Email' },
-  { key: 'website', label: 'Сайт' },
+/* ---------- Признаки (signal icons) ---------- */
+type SignalKey = 'hasAds' | 'hasOnlineBooking' | 'hasAnalytics' | 'hasWebsite';
+const SIGNAL_ICONS: { key: SignalKey; emoji: string; label: string }[] = [
+  { key: 'hasAds', emoji: '💰', label: 'Есть реклама' },
+  { key: 'hasOnlineBooking', emoji: '📅', label: 'Есть онлайн-запись' },
+  { key: 'hasAnalytics', emoji: '📊', label: 'Установлена аналитика' },
+  { key: 'hasWebsite', emoji: '🌐', label: 'Есть сайт' },
 ];
+
+function SignalIcons({ company }: { company: Company }) {
+  const signals: Record<SignalKey, boolean> = {
+    hasAds: Boolean(company.hasAds),
+    hasOnlineBooking: Boolean(company.hasOnlineBooking),
+    hasAnalytics: Boolean(company.hasAnalytics),
+    hasWebsite: Boolean(company.website),
+  };
+  return (
+    <div className="flex items-center gap-1">
+      {SIGNAL_ICONS.map(({ key, emoji, label }) => {
+        const present = signals[key];
+        return (
+          <span
+            key={key}
+            title={`${label}: ${present ? 'да' : 'нет'}`}
+            className={cn(
+              'flex h-6 w-6 items-center justify-center rounded-md text-sm',
+              present ? 'bg-card-green' : 'grayscale opacity-30',
+            )}
+          >
+            {emoji}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
 
 /* ---------- Company card ---------- */
 function CompanyCard({ company }: { company: Company }) {
@@ -138,9 +207,26 @@ function CompanyCard({ company }: { company: Company }) {
 }
 
 /* ---------- Company table ---------- */
-function CompanyTable({ companies }: { companies: Company[] }) {
+type ScoreSortDir = 'asc' | 'desc';
+
+function CompanyTable({
+  companies,
+  selectedIds,
+  onToggleOne,
+  onToggleAll,
+  scoreSortDir,
+  onToggleSort,
+}: {
+  companies: Company[];
+  selectedIds: Set<string>;
+  onToggleOne: (id: string) => void;
+  onToggleAll: () => void;
+  scoreSortDir: ScoreSortDir;
+  onToggleSort: () => void;
+}) {
   const navigate = useNavigate();
   const copy = useCopy();
+  const allSelected = companies.length > 0 && companies.every((c) => selectedIds.has(c.id));
 
   return (
     <BentoCard className="overflow-hidden p-0">
@@ -148,22 +234,55 @@ function CompanyTable({ companies }: { companies: Company[] }) {
         <table className="min-w-full divide-y divide-gray-100">
           <thead>
             <tr className="bg-muted">
+              <th className="w-10 px-4 py-3">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={onToggleAll}
+                  className="h-4 w-4 rounded border-border accent-blue-600"
+                  aria-label="Выбрать все"
+                />
+              </th>
               <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-body">Компания</th>
               <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-body">Источник</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-body">
+                <button
+                  type="button"
+                  onClick={onToggleSort}
+                  className="inline-flex cursor-pointer items-center gap-1 hover:text-accent"
+                >
+                  Score
+                  {scoreSortDir === 'desc' ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
+                </button>
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-body">Признаки</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-body">Аудит</th>
               <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-body">Телефон</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-body">Telegram</th>
               <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-body">Город</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-body">Сотрудников</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-body">Выручка</th>
               <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-body">Статус</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-body">Лидов</th>
               <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-text-body">Дата</th>
               <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-text-body" />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {companies.map((company) => (
-              <tr key={company.id} className="group cursor-pointer transition-colors hover:bg-muted" onClick={() => navigate(`/companies/${company.id}`)}>
+              <tr
+                key={company.id}
+                className={cn(
+                  'group cursor-pointer transition-colors hover:bg-muted',
+                  selectedIds.has(company.id) && 'bg-card-blue/40',
+                )}
+                onClick={() => navigate(`/companies/${company.id}`)}
+              >
+                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(company.id)}
+                    onChange={() => onToggleOne(company.id)}
+                    className="h-4 w-4 rounded border-border accent-blue-600"
+                    aria-label={`Выбрать ${company.name}`}
+                  />
+                </td>
                 <td className="whitespace-nowrap px-4 py-3">
                   <div className="flex items-center gap-3">
                     <div className="h-8 w-8 shrink-0 overflow-hidden rounded-full bg-gradient-to-br from-blue-100 to-blue-200">
@@ -184,6 +303,21 @@ function CompanyTable({ companies }: { companies: Company[] }) {
                   <SourceBadge source={company.source ?? 'manual'} />
                 </td>
                 <td className="whitespace-nowrap px-4 py-3">
+                  {company.score != null ? <ScoreBadge score={company.score} /> : <span className="text-text-subtle">—</span>}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3">
+                  <SignalIcons company={company} />
+                </td>
+                <td className="max-w-[220px] px-4 py-3">
+                  {company.auditText ? (
+                    <p className="truncate text-xs text-text-body" title={company.auditText}>
+                      {company.auditText}
+                    </p>
+                  ) : (
+                    <span className="text-text-subtle">—</span>
+                  )}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3">
                   {!company.phone ? (
                     <span className="text-text-subtle">—</span>
                   ) : (
@@ -200,28 +334,8 @@ function CompanyTable({ companies }: { companies: Company[] }) {
                     </button>
                   )}
                 </td>
-                <td className="whitespace-nowrap px-4 py-3">
-                  {!company.telegram ? (
-                    <span className="text-text-subtle">—</span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        copy(company.telegram!, 'Telegram скопирован');
-                      }}
-                      className="flex items-center gap-1.5 text-xs font-mono text-text-body hover:text-accent transition-colors"
-                    >
-                      {company.telegram}
-                      <Copy size={10} className="opacity-0 group-hover:opacity-100" />
-                    </button>
-                  )}
-                </td>
                 <td className="whitespace-nowrap px-4 py-3 text-sm text-text-body">{company.city}</td>
-                <td className="whitespace-nowrap px-4 py-3 text-sm text-text-body">{company.employees}</td>
-                <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-foreground">{company.revenue}</td>
                 <td className="whitespace-nowrap px-4 py-3"><StatusPill status={company.status} /></td>
-                <td className="whitespace-nowrap px-4 py-3 text-sm text-text-body">{company.activeLeads}</td>
                 <td className="whitespace-nowrap px-4 py-3 text-right text-xs text-muted-foreground">{formatDate(company.createdAt)}</td>
                 <td className="whitespace-nowrap px-4 py-3 text-right">
                   <button
@@ -480,12 +594,50 @@ function AddCompanyDialog({ open, onClose }: { open: boolean; onClose: () => voi
 /* ---------- Page component ---------- */
 type ViewMode = 'grid' | 'table';
 
+type QuickFilter = 'score70' | 'adsNoBooking' | 'noWebsite' | 'notEnriched';
+
+const QUICK_FILTERS: { key: QuickFilter; label: string; test: (c: Company) => boolean }[] = [
+  { key: 'score70', label: 'Score 70+', test: (c) => (c.score ?? 0) >= 70 },
+  { key: 'adsNoBooking', label: 'Есть реклама, нет записи', test: (c) => Boolean(c.hasAds) && !c.hasOnlineBooking },
+  { key: 'noWebsite', label: 'Без сайта', test: (c) => !c.website },
+  { key: 'notEnriched', label: 'Не обогащено', test: (c) => !c.enrichedAt },
+];
+
 export function CompaniesPage() {
   const companies = useCompaniesStore((s) => s.companies);
+  const fetchCompanies = useCompaniesStore((s) => s.fetchCompanies);
+  const enrichCompaniesBatch = useCompaniesStore((s) => s.enrichCompaniesBatch);
+  const scoreCompaniesBatch = useCompaniesStore((s) => s.scoreCompaniesBatch);
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [search, setSearch] = useState('');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
+  const [activeQuickFilters, setActiveQuickFilters] = useState<Set<QuickFilter>>(new Set());
   const [addOpen, setAddOpen] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const campaignFilter = searchParams.get('campaignId');
+
+  // The bootstrap fetch in App.tsx only runs once at app load — companies
+  // created afterward by a background job (e.g. a Cartographer run) never
+  // reach this page's store snapshot without an explicit re-fetch here.
+  // Confirmed live: navigating from ParseLaunchPage's "Смотреть компании"
+  // right after a run showed 0 companies until this was added.
+  useEffect(() => {
+    fetchCompanies();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [scoreSortDir, setScoreSortDir] = useState<'asc' | 'desc'>('desc');
+  const [bulkBusy, setBulkBusy] = useState<'enrich' | 'score' | null>(null);
+  const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 });
+
+  const toggleQuickFilter = (key: QuickFilter) => {
+    setActiveQuickFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   const sources = ['all', '2gis', 'yandex', 'telegram', 'instagram', 'rusprofile', 'avito', 'manual'];
   const sourceLabels: Record<string, string> = {
@@ -503,16 +655,83 @@ export function CompaniesPage() {
     let filtered = companies.filter(
       (c) => sourceFilter === 'all' || c.source === sourceFilter,
     );
-    if (!search.trim()) return filtered;
-    const q = search.toLowerCase();
-    return filtered.filter(
-      (c) =>
-        c.name.toLowerCase().includes(q) ||
-        c.industry.toLowerCase().includes(q) ||
-        c.city.toLowerCase().includes(q) ||
-        c.email.toLowerCase().includes(q),
-    );
-  }, [companies, search, sourceFilter]);
+    if (campaignFilter) {
+      filtered = filtered.filter((c) => c.campaignId === campaignFilter);
+    }
+    for (const qf of QUICK_FILTERS) {
+      if (activeQuickFilters.has(qf.key)) {
+        filtered = filtered.filter(qf.test);
+      }
+    }
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      filtered = filtered.filter(
+        (c) =>
+          c.name.toLowerCase().includes(q) ||
+          c.industry.toLowerCase().includes(q) ||
+          c.city.toLowerCase().includes(q) ||
+          c.email.toLowerCase().includes(q),
+      );
+    }
+    return filtered;
+  }, [companies, search, sourceFilter, campaignFilter, activeQuickFilters]);
+
+  // Score sort applies to the table view only — grid stays in its existing
+  // createdAt-desc order (unaffected by "TABLE COLUMNS" scope of this change).
+  const sortedForTable = useMemo(() => {
+    const dir = scoreSortDir === 'desc' ? -1 : 1;
+    return [...filteredCompanies].sort((a, b) => dir * ((a.score ?? -1) - (b.score ?? -1)));
+  }, [filteredCompanies, scoreSortDir]);
+
+  const toggleSelectOne = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedIds((prev) => {
+      const allSelected = sortedForTable.length > 0 && sortedForTable.every((c) => prev.has(c.id));
+      return allSelected ? new Set() : new Set(sortedForTable.map((c) => c.id));
+    });
+  };
+
+  const selectedCompanies = companies.filter((c) => selectedIds.has(c.id));
+
+  const handleBulkEnrich = async () => {
+    const ids = [...selectedIds];
+    setBulkBusy('enrich');
+    setBulkProgress({ done: 0, total: ids.length });
+    try {
+      const { enriched, failed } = await enrichCompaniesBatch(ids);
+      setBulkProgress({ done: ids.length, total: ids.length });
+      toast.success(`Обогащено: ${enriched.length}${failed.length ? `, ошибок: ${failed.length}` : ''}`);
+      setSelectedIds(new Set());
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Не удалось обогатить компании');
+    } finally {
+      setBulkBusy(null);
+    }
+  };
+
+  const handleBulkScore = async () => {
+    const ids = [...selectedIds];
+    setBulkBusy('score');
+    setBulkProgress({ done: 0, total: ids.length });
+    try {
+      await scoreCompaniesBatch(ids);
+      setBulkProgress({ done: ids.length, total: ids.length });
+      toast.success(`Score пересчитан для ${ids.length} компаний`);
+      setSelectedIds(new Set());
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Не удалось пересчитать score');
+    } finally {
+      setBulkBusy(null);
+    }
+  };
 
   const activeCount = companies.filter((c) => c.status === 'active').length;
   const totalLeads = companies.reduce((s, c) => s + c.activeLeads, 0);
@@ -520,6 +739,21 @@ export function CompaniesPage() {
 
   return (
     <>
+      {campaignFilter && (
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-accent/30 bg-card-blue px-4 py-2.5">
+          <p className="text-sm font-medium text-accent">
+            Показаны компании кампании «Картограф» · {filteredCompanies.length} найдено
+          </p>
+          <button
+            type="button"
+            onClick={() => setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete('campaignId'); return next; })}
+            className="shrink-0 rounded-lg px-3 py-1 text-xs font-medium text-accent hover:bg-white/50"
+          >
+            Сбросить фильтр
+          </button>
+        </div>
+      )}
+
       {/* Source filter tabs */}
       <div className="mb-4 flex gap-2 overflow-x-auto pb-2">
         {sources.map((s) => (
@@ -537,6 +771,68 @@ export function CompaniesPage() {
           </button>
         ))}
       </div>
+
+      {/* Cartographer signal quick filters */}
+      <div className="mb-4 flex gap-2 overflow-x-auto pb-2">
+        {QUICK_FILTERS.map((qf) => {
+          const active = activeQuickFilters.has(qf.key);
+          return (
+            <button
+              key={qf.key}
+              type="button"
+              onClick={() => toggleQuickFilter(qf.key)}
+              className={cn(
+                'flex-shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors',
+                active
+                  ? 'border-transparent bg-accent text-white'
+                  : 'border-border bg-card text-text-muted hover:text-text-primary',
+              )}
+            >
+              {qf.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Bulk actions bar — appears once rows are selected (table view) */}
+      {selectedIds.size > 0 && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent/30 bg-card-blue px-4 py-3">
+          <p className="text-sm font-medium text-accent">Выбрано: {selectedIds.size}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            {bulkBusy && (
+              <span className="inline-flex items-center gap-1.5 text-xs text-accent">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {bulkBusy === 'enrich' ? 'Обогащаем…' : 'Считаем score…'} {bulkProgress.done}/{bulkProgress.total}
+              </span>
+            )}
+            <button
+              type="button"
+              disabled={Boolean(bulkBusy)}
+              onClick={handleBulkEnrich}
+              className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-medium text-accent shadow-sm transition-all hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              Обогатить
+            </button>
+            <button
+              type="button"
+              disabled={Boolean(bulkBusy)}
+              onClick={handleBulkScore}
+              className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-medium text-accent shadow-sm transition-all hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              📊 Пересчитать score
+            </button>
+            <button
+              type="button"
+              onClick={() => exportCompaniesCsv(selectedCompanies)}
+              className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-medium text-accent shadow-sm transition-all hover:shadow-md"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Экспорт CSV
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Header toolbar */}
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
@@ -590,7 +886,7 @@ export function CompaniesPage() {
 
           <button
             type="button"
-            onClick={() => exportToCsv(companies, csvColumns, 'companies')}
+            onClick={() => exportCompaniesCsv(filteredCompanies)}
             className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-[rgba(0,0,0,0.08)] bg-white px-4 py-2 text-sm font-medium text-text-body shadow-sm transition-all hover:bg-muted hover:shadow-md min-h-[44px]"
             aria-label="Экспорт CSV"
           >
@@ -644,7 +940,14 @@ export function CompaniesPage() {
           ))}
         </div>
       ) : (
-        <CompanyTable companies={filteredCompanies} />
+        <CompanyTable
+          companies={sortedForTable}
+          selectedIds={selectedIds}
+          onToggleOne={toggleSelectOne}
+          onToggleAll={toggleSelectAll}
+          scoreSortDir={scoreSortDir}
+          onToggleSort={() => setScoreSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))}
+        />
       )}
 
       {filteredCompanies.length === 0 && (

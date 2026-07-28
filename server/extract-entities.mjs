@@ -25,7 +25,7 @@ const EXTRACT_PROMPT = `Ты извлекаешь список организа�
   Если href относительный (начинается с /), добавь домен сайта-источника (https://2gis.ru или https://yandex.ru) сам.`;
 
 /** Removes script/style/svg/comments/base64 data URIs — the bulk of page-shell bloat. */
-function stripBloat(html) {
+export function stripBloat(html) {
   return String(html ?? '')
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')

@@ -10,6 +10,7 @@ import { CompaniesPage } from './pages/CompaniesPage';
 import { CampaignsPage } from './pages/CampaignsPage';
 import { OutreachHubPage } from './pages/OutreachHubPage';
 import { ParseLaunchPage } from './pages/ParseLaunchPage';
+import { RadarPage } from './pages/RadarPage';
 import { QueuePage } from './pages/QueuePage';
 import { HomePage } from './pages/HomePage';
 import { BrainHudPage } from './pages/BrainHudPage';
@@ -111,6 +112,14 @@ function App() {
           element={
             <AppShell>
               <QueuePage />
+            </AppShell>
+          }
+        />
+        <Route
+          path="/radar"
+          element={
+            <AppShell>
+              <RadarPage />
             </AppShell>
           }
         />

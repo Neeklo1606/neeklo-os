@@ -30,6 +30,10 @@ export interface Campaign {
   conversions: number;
   channels: string[];
   companyId: string;
+  // Set by server/index.mjs's POST /api/cartographer/run — only present on
+  // campaigns created by the Cartographer pipeline (used to list recent runs).
+  niche?: string;
+  region?: string;
 }
 
 export type CompanyStatus =
@@ -76,14 +80,12 @@ export const SOURCE_CONFIG = {
   manual: { label: 'Вручную', emoji: '✏️', color: '#6B7280' },
 } as const;
 
+/** Matches server/score-company.mjs's scoreCompany() output exactly — one entry per weighted criterion. */
 export interface CompanyScoreBreakdown {
-  no_online_booking?: boolean;
-  high_rating?: boolean;
-  has_website?: boolean;
-  no_telegram?: boolean;
-  revenue_10m_plus?: boolean;
-  reviews_50_plus?: boolean;
+  [criterionKey: string]: { points: number; met: boolean; label: string };
 }
+
+export type DesignAge = 'modern' | 'dated' | 'very-old';
 
 export interface Company {
   id: string;
@@ -134,6 +136,19 @@ export interface Company {
   score_breakdown?: CompanyScoreBreakdown | null;
   pain_text?: string | null;
   recommended_offer?: string | null;
+  // Populated by server/enrich-company.mjs (POST /api/companies/:id/enrich, /enrich-batch)
+  enrichedAt?: string | null;
+  websiteWorking?: boolean | null;
+  hasOnlineBooking?: boolean | null;
+  hasContactForm?: boolean | null;
+  hasAnalytics?: boolean | null;
+  hasAds?: boolean | null;
+  socialVk?: string | null;
+  socialTelegram?: string | null;
+  designAge?: DesignAge | null;
+  auditText?: string | null;
+  // Set by server/jobs/cartographer-run.mjs so /companies can filter by run.
+  campaignId?: string | null;
 }
 
 export const STATUS_COLUMNS: { key: LeadStatus; label: string; color: string }[] = [
@@ -362,12 +377,10 @@ export const mockCompanies: Company[] = [
     revenue_m: 450,
     address: 'Москва, ул. Пресненская наб., 12',
     score_breakdown: {
-      no_online_booking: true,
-      high_rating: true,
-      has_website: true,
-      no_telegram: false,
-      revenue_10m_plus: true,
-      reviews_50_plus: false,
+      noOnlineBooking: { points: 20, met: true, label: 'Нет онлайн-записи' },
+      highRating: { points: 15, met: true, label: 'Высокий рейтинг = доверие' },
+      activeReviews: { points: 10, met: false, label: 'Активный бизнес' },
+      socialActive: { points: 5, met: true, label: 'Активен в диджитал' },
     },
     pain_text:
       'Компания теряет до 30% заявок в нерабочее время — нет онлайн-записи и чат-бота. Конкуренты уже автоматизировали первичный контакт.',

@@ -23,6 +23,22 @@ export function formatDate(dateString: string): string {
   }).format(date);
 }
 
+export function formatRelativeTime(dateString: string | null | undefined): string {
+  if (!dateString) return '—';
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return '—';
+  const diffMs = Date.now() - date.getTime();
+  const diffMin = Math.round(diffMs / 60_000);
+  if (diffMin < 1) return 'только что';
+  if (diffMin < 60) return `${diffMin} мин назад`;
+  const diffHours = Math.round(diffMin / 60);
+  if (diffHours < 24) return `${diffHours} ч назад`;
+  const diffDays = Math.round(diffHours / 24);
+  if (diffDays === 1) return 'вчера';
+  if (diffDays < 7) return `${diffDays} дн назад`;
+  return formatDate(dateString);
+}
+
 export function getInitials(name: string): string {
   return name
     .split(' ')

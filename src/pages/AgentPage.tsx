@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Bot,
@@ -12,6 +12,10 @@ import {
   Workflow,
   Braces,
   AlertTriangle,
+  Radar,
+  Map,
+  Check,
+  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
@@ -25,6 +29,7 @@ import {
   validateOrgs,
 } from '../lib/agent/api';
 import type {
+  AgentAction,
   AgentSession,
   AgentSessionSummary,
   ChatMessage,
@@ -33,6 +38,96 @@ import type {
 } from '../lib/agent/types';
 import { jsonRowsToCompanies } from '../lib/companies/fromAgentJson';
 import { useCompaniesStore } from '../lib/stores/companiesStore';
+import { fetchCompanies } from '../lib/companies/api';
+import {
+  createRadarChannel,
+  fetchRadarSignals,
+  fetchRadarStatus,
+  triggerRadarCheckNow,
+} from '../lib/radar/api';
+import { fetchCartographerRun, startCartographerRun } from '../lib/cartographer/api';
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Human-readable label for the confirmation card — matches server/agent-prompt.mjs's action types. */
+function describeAction(action: AgentAction): string {
+  switch (action.type) {
+    case 'radar.addChannel':
+      return `Радар: добавить канал @${String(action.params.username ?? '?')}`;
+    case 'radar.check':
+      return 'Радар: запустить проверку сейчас';
+    case 'radar.newSignals':
+      return 'Радар: показать новые сигналы';
+    case 'cartographer.run':
+      return `Картограф: собрать ${action.params.limit ?? 10} компаний — «${action.params.niche ?? '?'}» в ${action.params.region ?? '?'}`;
+    case 'companies.top':
+      return `Показать топ-${action.params.limit ?? 10} компаний по score`;
+    default:
+      return 'Выполнить действие';
+  }
+}
+
+/** Dispatches a confirmed action to the real API and returns an inline-renderable result string. */
+async function executeAgentAction(action: AgentAction): Promise<string> {
+  switch (action.type) {
+    case 'radar.addChannel': {
+      const username = String(action.params.username ?? '').trim().replace(/^@/, '');
+      if (!username) throw new Error('Не указан username канала');
+      const { channel } = await createRadarChannel({ username });
+      return `✅ Канал @${channel.username} добавлен в Радар.`;
+    }
+
+    case 'radar.check': {
+      const { started, reason } = await triggerRadarCheckNow();
+      if (!started) return `Проверка не запущена: ${reason ?? 'уже выполняется'}.`;
+      for (let i = 0; i < 40; i += 1) {
+        await sleep(3000);
+        const status = await fetchRadarStatus();
+        if (!status.running) break;
+      }
+      const { signals } = await fetchRadarSignals({ status: 'new' });
+      return `✅ Проверка завершена. Новых сигналов: ${signals.length}.`;
+    }
+
+    case 'radar.newSignals': {
+      const limit = Number(action.params.limit) || 10;
+      const { signals } = await fetchRadarSignals({ status: 'new' });
+      if (signals.length === 0) return 'Новых сигналов нет.';
+      return signals
+        .slice(0, limit)
+        .map((s, i) => `${i + 1}. @${s.channel}: ${s.text.slice(0, 100)}${s.text.length > 100 ? '…' : ''}`)
+        .join('\n');
+    }
+
+    case 'cartographer.run': {
+      const niche = String(action.params.niche ?? '').trim();
+      const region = String(action.params.region ?? '').trim();
+      const limit = [10, 25, 50].includes(Number(action.params.limit)) ? Number(action.params.limit) : 10;
+      if (!niche || !region) throw new Error('Нужны ниша и регион');
+      const { runId, campaignId } = await startCartographerRun({ niche, region, limit, enrich: false });
+      for (let i = 0; i < 60; i += 1) {
+        await sleep(3000);
+        const run = await fetchCartographerRun(runId);
+        if (run.status === 'failed') throw new Error(run.error ?? 'Сбор завершился с ошибкой');
+        if (run.status === 'completed') {
+          return `✅ Готово: ${run.found} компаний найдено. Смотреть: /companies?campaignId=${campaignId}`;
+        }
+      }
+      return 'Сбор ещё выполняется — результат появится на странице «Парсинг» позже.';
+    }
+
+    case 'companies.top': {
+      const limit = Number(action.params.limit) || 10;
+      const { companies } = await fetchCompanies();
+      const top = [...companies].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, limit);
+      if (top.length === 0) return 'Компаний пока нет.';
+      return top.map((c, i) => `${i + 1}. ${c.name} — score ${c.score ?? '—'}`).join('\n');
+    }
+
+    default:
+      throw new Error(`Неизвестное действие: ${action.type}`);
+  }
+}
 
 interface Template {
   id: string;
@@ -91,6 +186,84 @@ const STATUS_LABEL: Record<RunPlanStatus['status'], string> = {
   failed: 'Ошибка',
 };
 
+type ActionState = { status: 'pending' | 'running' | 'done' | 'error' | 'cancelled'; result?: string };
+
+const ACTION_ICON: Record<string, ComponentType<{ className?: string }>> = {
+  'radar.addChannel': Radar,
+  'radar.check': Radar,
+  'radar.newSignals': Radar,
+  'cartographer.run': Map,
+  'companies.top': Map,
+};
+
+/** The confirm/cancel card for a control-surface action — never auto-executes. */
+function ActionCard({
+  message,
+  state,
+  onConfirm,
+  onCancel,
+}: {
+  message: ChatMessage;
+  state?: ActionState;
+  onConfirm: (messageId: string, action: AgentAction) => void;
+  onCancel: (messageId: string) => void;
+}) {
+  const action = message.action;
+  if (!action) return null;
+  const Icon = ACTION_ICON[action.type] ?? Sparkles;
+  const status = state?.status ?? 'pending';
+
+  return (
+    <div className="max-w-[90%] rounded-xl border border-accent/30 bg-card p-3">
+      <div className="flex items-center gap-2 text-xs font-medium text-foreground">
+        <Icon className="h-3.5 w-3.5 text-accent" />
+        Выполнить: {describeAction(action)}
+      </div>
+
+      {status === 'pending' && (
+        <div className="mt-2.5 flex gap-2">
+          <button
+            type="button"
+            onClick={() => onConfirm(message.id, action)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent/90"
+          >
+            <Check className="h-3.5 w-3.5" />
+            Выполнить
+          </button>
+          <button
+            type="button"
+            onClick={() => onCancel(message.id)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted"
+          >
+            <X className="h-3.5 w-3.5" />
+            Отмена
+          </button>
+        </div>
+      )}
+
+      {status === 'running' && (
+        <p className="mt-2.5 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Выполняется…
+        </p>
+      )}
+
+      {status === 'cancelled' && <p className="mt-2.5 text-xs text-muted-foreground">Отменено.</p>}
+
+      {(status === 'done' || status === 'error') && (
+        <p
+          className={cn(
+            'mt-2.5 whitespace-pre-wrap text-xs leading-relaxed',
+            status === 'error' ? 'text-red-600' : 'text-foreground',
+          )}
+        >
+          {state?.result}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function AgentPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -110,6 +283,27 @@ export function AgentPage() {
   const [run, setRun] = useState<RunPlanStatus | null>(null);
   const [validated, setValidated] = useState<ValidateOrgsResponse | null>(null);
   const [validating, setValidating] = useState(false);
+
+  // Per-message state for the control-surface confirm/cancel cards —
+  // keyed by message id, reset on reload (never auto-executed, so nothing
+  // to persist: a pending action left un-confirmed is simply asked again).
+  const [actionStates, setActionStates] = useState<Record<string, ActionState>>({});
+
+  const handleConfirmAction = useCallback(async (messageId: string, action: AgentAction) => {
+    setActionStates((prev) => ({ ...prev, [messageId]: { status: 'running' } }));
+    try {
+      const result = await executeAgentAction(action);
+      setActionStates((prev) => ({ ...prev, [messageId]: { status: 'done', result } }));
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Не удалось выполнить действие';
+      setActionStates((prev) => ({ ...prev, [messageId]: { status: 'error', result: message } }));
+      toast.error(message);
+    }
+  }, []);
+
+  const handleCancelAction = useCallback((messageId: string) => {
+    setActionStates((prev) => ({ ...prev, [messageId]: { status: 'cancelled' } }));
+  }, []);
 
   const sessionIdRef = useRef<string | null>(null);
   const nicheRef = useRef<string | null>(null);
@@ -253,6 +447,7 @@ export function AgentPage() {
           role: 'assistant',
           content: res.message || 'Готово.',
           timestamp: new Date().toISOString(),
+          action: res.action ?? null,
         };
         const withAssistant = [...withUser, assistantMsg];
         setMessages(withAssistant);
@@ -539,14 +734,16 @@ export function AgentPage() {
             </div>
           ) : (
             messages.map((m) => (
-              <div
-                key={m.id}
-                className={cn(
-                  'max-w-[90%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
-                  m.role === 'user' ? 'ml-auto bg-accent text-white' : 'bg-muted text-foreground',
-                )}
-              >
-                {m.content}
+              <div key={m.id} className="flex flex-col gap-2">
+                <div
+                  className={cn(
+                    'max-w-[90%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
+                    m.role === 'user' ? 'ml-auto bg-accent text-white' : 'bg-muted text-foreground',
+                  )}
+                >
+                  {m.content}
+                </div>
+                {m.action && <ActionCard message={m} state={actionStates[m.id]} onConfirm={handleConfirmAction} onCancel={handleCancelAction} />}
               </div>
             ))
           )}

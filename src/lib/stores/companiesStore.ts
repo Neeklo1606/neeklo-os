@@ -4,7 +4,10 @@ import {
   createCompaniesBulk,
   createCompanyApi,
   deleteCompanyApi,
+  enrichCompanyApi,
+  enrichCompaniesBatchApi,
   fetchCompanies,
+  scoreCompanyApi,
   updateCompanyApi,
 } from '../companies/api';
 
@@ -22,6 +25,9 @@ interface CompaniesState {
   removeCompany: (id: string) => Promise<void>;
   resetCompanies: () => void;
   restoreCompany: (company: Company) => Promise<void>;
+  enrichCompany: (id: string) => Promise<void>;
+  enrichCompaniesBatch: (ids: string[]) => Promise<{ enriched: Company[]; failed: { id: string; error: string }[] }>;
+  scoreCompaniesBatch: (ids: string[]) => Promise<void>;
 }
 
 export const useCompaniesStore = create<CompaniesState>()((set, get) => ({
@@ -90,5 +96,33 @@ export const useCompaniesStore = create<CompaniesState>()((set, get) => ({
     } else {
       await get().addCompany(company);
     }
+  },
+
+  enrichCompany: async (id) => {
+    const { company } = await enrichCompanyApi(id);
+    set((state) => ({ companies: state.companies.map((c) => (c.id === id ? company : c)) }));
+  },
+
+  enrichCompaniesBatch: async (ids) => {
+    const { enriched, failed } = await enrichCompaniesBatchApi(ids);
+    set((state) => ({
+      companies: state.companies.map((c) => enriched.find((e) => e.id === c.id) ?? c),
+    }));
+    return { enriched, failed };
+  },
+
+  scoreCompaniesBatch: async (ids) => {
+    const results = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          return (await scoreCompanyApi(id)).company;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    set((state) => ({
+      companies: state.companies.map((c) => results.find((r) => r?.id === c.id) ?? c),
+    }));
   },
 }));

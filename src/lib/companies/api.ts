@@ -70,3 +70,22 @@ export async function deleteCompanyApi(id: string) {
     method: 'DELETE',
   });
 }
+
+export async function enrichCompanyApi(id: string) {
+  return request<{ success: boolean; company: Company }>(`/${encodeURIComponent(id)}/enrich`, {
+    method: 'POST',
+  });
+}
+
+export async function enrichCompaniesBatchApi(ids: string[]) {
+  return request<{ success: boolean; enriched: Company[]; failed: { id: string; error: string }[] }>(
+    '/enrich-batch',
+    { method: 'POST', body: JSON.stringify({ ids }) },
+  );
+}
+
+export async function scoreCompanyApi(id: string) {
+  return request<{ success: boolean; company: Company }>(`/${encodeURIComponent(id)}/score`, {
+    method: 'POST',
+  });
+}
