@@ -12,6 +12,16 @@ dist
 dist-ssr
 *.local
 backups/
+
+# Build/deploy archives — regenerate via npm run deploy:node, never commit
+*.tar.gz
+*.zip
+
+# Root-level screenshots/exports (ad-hoc, not project assets) — keep public/ images
+/*.png
+
+# Playwright MCP traces/screenshots from local testing
+.playwright-mcp/
 .env
 .env.local
 .env.*.local
@@ -41,3 +51,4 @@ scripts/neeklo/CREDENTIALS.txt
 *.njsproj
 *.sln
 *.sw?
+.gstack/

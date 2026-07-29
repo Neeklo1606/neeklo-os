@@ -1,32 +1,26 @@
-# React + TypeScript + Vite
+# NEEKLO OS
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+AI CRM для холодного B2B-аутрича — поиск клиентов, мониторинг спроса, research-led outreach.
 
-Currently, two official plugins are available:
+## Что делает
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **Ловец сигналов** — мониторит публичные источники на запросы «нужен сайт / бот / CRM / платформа», скорит, уведомляет
+- **Картограф ниш** — собирает реестр компаний по вертикали и региону, проводит цифровой аудит, скорит по fit_score
+- **CRM** — воронка от сигнала до сделки
 
-## React Compiler
+## Стек
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+React 19 + TypeScript + Vite (frontend), Node (backend), neekloai.ru Parser API, OpenRouter (LLM)
 
-## Expanding the Oxlint configuration
+## Запуск
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```
+npm install
+cp .env.example .env  # заполни ключи
+npm run dev:full      # frontend :5173, backend :8787
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Документация
+
+- ARCHITECTURE.md — карта системы
+- API_PARSER_INTEGRATION.ru.md — интеграция парсера
