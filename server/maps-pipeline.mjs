@@ -234,6 +234,36 @@ async function withRetry(fn) {
 }
 
 /**
+ * parser.mjs's request() no longer encodes URLs itself (encoding an
+ * already-encoded URL a second time turns `%D0%A1...` into `%25D0%25A1...`,
+ * garbage 2GIS can't parse) — callers now own encoding. Job bodies here
+ * originate from the LLM's plan (openrouter.plan()) and embed raw, unescaped
+ * Cyrillic search text straight into the URL string (see agent-prompt.mjs's
+ * own examples, e.g. "https://2gis.ru/moscow/search/ЗАПРОС"), so this is the
+ * one place that must encode before dispatch. Safe to apply unconditionally:
+ * URLs that are already fully-qualified and ASCII-only (extracted card URLs
+ * from buildMapsCardJob/fetchYandexOrgUrlsViaSmart) pass through encodeURI
+ * unchanged.
+ * @param {Record<string, unknown>} body
+ */
+function encodeJobUrls(body) {
+  const next = { ...body };
+  if (Array.isArray(next.urls)) {
+    next.urls = next.urls.map((u) => (typeof u === 'string' ? encodeURI(u) : u));
+  }
+  if (next.options && typeof next.options === 'object') {
+    const options = /** @type {Record<string, unknown>} */ (next.options);
+    if (typeof options.url === 'string') {
+      next.options = { ...options, url: encodeURI(options.url) };
+    }
+  }
+  if (typeof next.url === 'string') {
+    next.url = encodeURI(next.url);
+  }
+  return next;
+}
+
+/**
  * @param {import('./parser.mjs').ReturnType<typeof import('./parser.mjs').createParserClient>} parser
  * @param {Array<{ label?: string, body?: Record<string, unknown> }>} plannedJobs
  * @param {{ userText?: string, autoMapsPipeline?: boolean, niche?: string, onProgress?: (state: { executed: unknown[], currentLabel: string | null, jobsDone: number }) => void }} opts
@@ -272,6 +302,7 @@ export async function executeJobPlan(parser, plannedJobs, opts = {}) {
   while (stepIndex < pending.length) {
     const item = pending[stepIndex];
     stepIndex += 1;
+    item.body = encodeJobUrls(item.body);
     const label = item.label ?? 'Задача';
     const jobSource = mapsJobSource(item.body);
 

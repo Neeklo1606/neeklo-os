@@ -30,12 +30,14 @@ const POLL_INTERVAL_MS = 3000;
 const STEPS_WITH_ENRICH: { key: CartographerStage; label: string }[] = [
   { key: 'search', label: 'Поиск компаний' },
   { key: 'extract', label: 'Извлечение данных' },
+  { key: 'phones', label: 'Дозапрос телефонов' },
   { key: 'enrich', label: 'Проверка сайтов' },
   { key: 'score', label: 'Скоринг' },
 ];
 const STEPS_WITHOUT_ENRICH: { key: CartographerStage; label: string }[] = [
   { key: 'search', label: 'Поиск компаний' },
   { key: 'extract', label: 'Извлечение данных' },
+  { key: 'phones', label: 'Дозапрос телефонов' },
 ];
 
 function StepIndicator({ status }: { status: StepStatus }) {
@@ -117,6 +119,8 @@ export function ParseLaunchPage() {
         status: 'running',
         stage: 'search',
         found: 0,
+        phonesTotal: 0,
+        phonesFetched: 0,
         enriched: 0,
         campaignId,
         niche,
@@ -317,6 +321,11 @@ export function ParseLaunchPage() {
                               </p>
                               {step.key === 'search' && status !== 'pending' && (
                                 <p className="mt-0.5 text-xs text-text-muted">найдено: {run?.found ?? 0}</p>
+                              )}
+                              {step.key === 'phones' && status !== 'pending' && (
+                                <p className="mt-0.5 text-xs text-text-muted">
+                                  дозапрошено: {run?.phonesFetched ?? 0} / {run?.phonesTotal ?? 0}
+                                </p>
                               )}
                               {step.key === 'enrich' && status !== 'pending' && (
                                 <p className="mt-0.5 text-xs text-text-muted">

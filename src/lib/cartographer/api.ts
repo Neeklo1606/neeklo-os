@@ -1,4 +1,4 @@
-export type CartographerStage = 'search' | 'extract' | 'enrich' | 'score' | 'done';
+export type CartographerStage = 'search' | 'extract' | 'phones' | 'enrich' | 'score' | 'done';
 export type CartographerStatus = 'running' | 'completed' | 'failed';
 
 export interface CartographerRun {
@@ -6,6 +6,8 @@ export interface CartographerRun {
   status: CartographerStatus;
   stage: CartographerStage;
   found: number;
+  phonesTotal: number;
+  phonesFetched: number;
   enriched: number;
   campaignId: string;
   niche: string;

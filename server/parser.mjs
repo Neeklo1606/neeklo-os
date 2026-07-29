@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { extractCompaniesFromHtml } from './extract-entities.mjs';
 
 /** @param {string} url */
-function sourceFromUrl(url) {
+export function sourceFromUrl(url) {
   if (typeof url !== 'string') return null;
   if (/2gis\.ru/i.test(url)) return '2gis';
   if (/yandex\.ru\/maps/i.test(url)) return 'yandex';
@@ -12,19 +12,22 @@ function sourceFromUrl(url) {
 }
 
 // Sources where the API's `company` entities map directly to our Company shape.
-const COMPANY_ENTITY_SOURCES = new Set(['2gis', 'yandex', 'rusprofile']);
+export const COMPANY_ENTITY_SOURCES = new Set(['2gis', 'yandex', 'rusprofile']);
 
 // Sources where the HTML-extraction fallback (extract-entities.mjs) applies —
 // its prompt is hard-coded for Maps-style listing pages, so it's scoped to
 // the two sources it was written for. Not extended to rusprofile/avito
 // without a prompt rewrite (flagged in the integration report).
-const HTML_FALLBACK_SOURCES = new Set(['2gis', 'yandex']);
+export const HTML_FALLBACK_SOURCES = new Set(['2gis', 'yandex']);
 
 // docs/API_PARSER_INTEGRATION.ru.md §12: timeoutMs >= 120000 for browser-heavy
 // sources; 2gis/yandex specifically need 180000 (Yandex Maps flakiness).
 // No prior code enforced this — job bodies never set timeoutMs, so every
 // job silently ran at the 120000 default. Enforcing the per-source floor now.
-const MIN_TIMEOUT_MS_BY_SOURCE = { '2gis': 180000, yandex: 180000, avito: 120000 };
+// parseUrl() doesn't enforce this itself (unlike parseOne) since it's a raw
+// pass-through for callers like enrich-company.mjs — exported so any caller
+// hitting 2gis/yandex individual pages can apply the same floor.
+export const MIN_TIMEOUT_MS_BY_SOURCE = { '2gis': 180000, yandex: 180000, avito: 120000 };
 
 /**
  * On search/listing pages (confirmed live against 2GIS) the API can fall back
@@ -34,12 +37,12 @@ const MIN_TIMEOUT_MS_BY_SOURCE = { '2gis': 180000, yandex: 180000, avito: 120000
  * one that's a raw HTML dump is not. Reject those rather than mapping the
  * page title in as a fake company name with megabytes of HTML as its card_url.
  */
-function isUrlShaped(value) {
+export function isUrlShaped(value) {
   return typeof value === 'string' && value.length < 2048 && /^https?:\/\//i.test(value);
 }
 
 /** @param {import('./parser.mjs').Entity} entity */
-function companyFromEntity(entity) {
+export function companyFromEntity(entity) {
   const fields = entity?.fields ?? {};
   const phones = Array.isArray(fields.phones) ? fields.phones : [];
   const address = typeof fields.address === 'string' ? fields.address : null;
@@ -199,11 +202,17 @@ export function createParserClient(config, openrouter) {
     }
 
     // neekloai.ru's validator rejects raw spaces/unescaped Cyrillic in the URL
-    // ("url must be a URL address") — confirmed against the live API.
+    // ("url must be a URL address") — confirmed against the live API. The URL
+    // must already be encoded by the time it reaches this function — callers
+    // (cartographer-run.mjs, executeJobPlan in maps-pipeline.mjs) are
+    // responsible for that. Encoding here too used to double-encode already-
+    // escaped `%` sequences (%25D0%25A1...), turning valid search queries
+    // into garbage 2GIS can't parse — confirmed live: it fell back to serving
+    // unrelated sponsored listings instead of real search results.
     const data = await request('/parser/parse', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: encodeURI(url), timeoutMs }),
+      body: JSON.stringify({ url, timeoutMs }),
       timeoutMs: timeoutMs + 5000,
     });
     // authRequired must be checked BEFORE entityCount is treated as meaningful —

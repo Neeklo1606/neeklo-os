@@ -18,7 +18,6 @@ import { ProjectsPage } from './pages/ProjectsPage';
 import { FinancePage } from './pages/FinancePage';
 import { ContentPage } from './pages/ContentPage';
 import { AgentPage } from './pages/AgentPage';
-import { neekloApi } from './services/neekloApi';
 import {
   useCompaniesStore,
 } from './lib/stores/companiesStore';
@@ -45,10 +44,6 @@ function CrmStoreBootstrap() {
     fetchCompanies();
     fetchLeads();
     fetchCampaigns();
-    neekloApi
-      .getMe()
-      .then((me) => console.log('NEEKLO API connected:', me.username))
-      .catch((e) => console.warn('NEEKLO API not available:', e.message));
   }, [fetchCompanies, fetchLeads, fetchCampaigns]);
   return null;
 }

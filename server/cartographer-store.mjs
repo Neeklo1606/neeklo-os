@@ -14,8 +14,10 @@ export function createCartographerRun(meta) {
   runs.set(id, {
     id,
     status: 'running', // running | completed | failed
-    stage: 'search', // search | extract | enrich | score | done
+    stage: 'search', // search | extract | phones | enrich | score | done
     found: 0,
+    phonesTotal: 0,
+    phonesFetched: 0,
     enriched: 0,
     campaignId: meta.campaignId,
     niche: meta.niche,
