@@ -9,7 +9,7 @@ if (!token) {
   process.exit(1);
 }
 
-const required = ['PARSER_API_KEY', 'OPENROUTER_API_KEY'];
+const required = ['NEEKLO_API_KEY', 'OPENROUTER_API_KEY'];
 for (const key of required) {
   if (!process.env[key]?.trim()) {
     console.error(`${key} is required in .env`);
@@ -19,8 +19,8 @@ for (const key of required) {
 
 const port = process.env.PORT?.trim() || '8787';
 const envContent = `# Production — deployed to Neeklo server (do not commit)
-PARSER_API_KEY=${process.env.PARSER_API_KEY}
-PARSER_API_BASE=${process.env.PARSER_API_BASE ?? 'https://api.neeklo.ru'}
+NEEKLO_API_KEY=${process.env.NEEKLO_API_KEY}
+NEEKLO_API_BASE=${process.env.NEEKLO_API_BASE ?? 'https://neekloai.ru/api/v1'}
 OPENROUTER_API_KEY=${process.env.OPENROUTER_API_KEY}
 OPENROUTER_MODEL=${process.env.OPENROUTER_MODEL ?? 'deepseek/deepseek-v4-flash'}
 PORT=${port}
