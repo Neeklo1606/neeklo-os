@@ -2,6 +2,8 @@ import { createCompanies, updateCompany } from '../companies-db.mjs';
 import { updateCampaign } from '../campaigns-db.mjs';
 import { enrichCompany } from '../enrich-company.mjs';
 import { scoreCompany } from '../score-company.mjs';
+import { getAudit } from '../audit-db.mjs';
+import { generateOpportunity } from '../generate-opportunity.mjs';
 import { patchCartographerRun } from '../cartographer-store.mjs';
 import {
   companyFromEntity,
@@ -57,7 +59,7 @@ function cityFromAddress(address) {
   return segments.length > 1 ? segments[segments.length - 1] : null;
 }
 
-/** @param {Record<string, unknown>} org @param {{ niche: string, region: string, campaignId: string }} ctx */
+/** @param {Record<string, unknown>} org @param {{ niche: string, region: string, campaignId: string, verticalKey?: string }} ctx */
 function orgToCompanyRecord(org, ctx) {
   const phones = Array.isArray(org.phones) ? org.phones : [];
   const phone = typeof org.phone === 'string' && org.phone ? org.phone : phones[0] ?? '';
@@ -83,7 +85,147 @@ function orgToCompanyRecord(org, ctx) {
     phone2: phones[1] ?? null,
     source_url: typeof org.card_url === 'string' ? org.card_url : null,
     campaignId: ctx.campaignId,
+    // Tags the record for server/score-fit.mjs's vertical-fit criterion —
+    // previously nothing set these, so every company ever collected had
+    // vertical: undefined regardless of which vertical the search used.
+    ...(ctx.verticalKey ? { vertical: ctx.verticalKey, subsegment: ctx.niche } : {}),
   };
+}
+
+const EXCLUSION_CLASSIFY_DELAY_MS = 500;
+
+/**
+ * One AI call per company for the three judgment-based exclusion criteria
+ * that have no reliable deterministic signal (retail-only, micro-business,
+ * and a same-call assist for federal-chain). temperature 0 per spec.
+ * Never throws — a parse/network failure returns the "keep, benefit of the
+ * doubt" defaults rather than silently excluding a company because the LLM
+ * call happened to fail.
+ *
+ * `company.industry` here is NOT an independently observed category — in
+ * this pipeline it's always just the search niche/subsegment the query
+ * used (see orgToCompanyRecord: `industry: ctx.niche`), so it's the same
+ * value for every candidate in a run. Confirmed live: phrasing the prompt
+ * as "категория «X»" made the model treat that label as settled fact and
+ * default to trusting it for every company, including an obvious kiosk
+ * and an obvious federal chain in a synthetic test batch. Rephrasing it as
+ * "found via this search query — not a confirmed category, don't trust it"
+ * and telling the model to judge from the name/reviews/website instead
+ * fixed this — the same test batch then correctly split retail-only and
+ * flagged the federal chain.
+ * @param {import('../openrouter.mjs').ReturnType<typeof import('../openrouter.mjs').createOpenRouterClient>} openrouter
+ * @param {{ name?: string, industry?: string, reviewCount?: number, website?: string }} company
+ * @param {{ label?: string } | null} vertical
+ */
+async function classifyForExclusion(openrouter, company, vertical) {
+  const fallback = { isRetailOnly: false, isFederalChain: false, isMicroBusiness: false, matchesVertical: true, reason: '' };
+  const prompt = `Компания «${company.name ?? ''}» найдена в 2GIS по поисковому запросу «${company.industry ?? ''}» — это НЕ подтверждённая категория, а просто запрос, по которому её нашли. У неё ${company.reviewCount ?? 0} отзывов, сайт: ${company.website || 'нет'}.
+Оцени КРИТИЧЕСКИ по названию компании, отзывам и сайту — не доверяй поисковому запросу как факту. Вертикаль, которую мы реально ищем: ${vertical?.label ?? 'не указана'}.
+Ответь строго JSON:
+{
+  "isRetailOnly": true|false,
+  "isFederalChain": true|false,
+  "isMicroBusiness": true|false,
+  "matchesVertical": true|false,
+  "reason": "до 10 слов"
+}`;
+
+  try {
+    const { content } = await openrouter.chat([{ role: 'user', content: prompt }], { temperature: 0, systemPrompt: null });
+    const jsonText = content.match(/\{[\s\S]*\}/)?.[0] ?? content;
+    const parsed = JSON.parse(jsonText);
+    return {
+      isRetailOnly: parsed?.isRetailOnly === true,
+      isFederalChain: parsed?.isFederalChain === true,
+      isMicroBusiness: parsed?.isMicroBusiness === true,
+      matchesVertical: parsed?.matchesVertical !== false,
+      reason: typeof parsed?.reason === 'string' ? parsed.reason : '',
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Runs each collected candidate through the checked exclusion filters
+ * before anything gets inserted into companies-db — excluded companies are
+ * never written, only logged (name + reason) so the UI can show them, not
+ * silently drop them.
+ * @param {import('../openrouter.mjs').ReturnType<typeof import('../openrouter.mjs').createOpenRouterClient>} openrouter
+ * @param {Array<Record<string, any>>} candidates
+ * @param {{ vertical: { label?: string } | null, exclude: Record<string, boolean> }} ctx
+ * @returns {Promise<{ kept: Array<Record<string, any>>, excluded: { name: string, reason: string }[] }>}
+ */
+async function filterExclusions(openrouter, candidates, ctx) {
+  const exclude = ctx.exclude ?? {};
+  const vertical = ctx.vertical ?? null;
+  const kept = [];
+  const excluded = [];
+  const seenPhones = new Set();
+  const seenNames = new Set();
+  const seenDomains = new Set();
+  const needsAi = Boolean(exclude.retailOnly || exclude.microBusiness || exclude.federalCorp);
+
+  for (let i = 0; i < candidates.length; i += 1) {
+    const company = candidates[i];
+    const name = String(company.name ?? '(без названия)').trim();
+
+    if (exclude.noWebsite && !String(company.website ?? '').trim()) {
+      excluded.push({ name, reason: 'нет сайта' });
+      continue;
+    }
+
+    // Intra-batch duplicate check — visible/reported, distinct from
+    // companies-db.mjs's own createCompanies dedup (phone/source_url/
+    // name+phone), which always applies regardless of this checkbox as a
+    // baseline data-integrity guard. This is the checkbox-controlled,
+    // logged layer on top of that, not a replacement for it.
+    if (exclude.duplicates) {
+      const domain = String(company.website ?? '')
+        .replace(/^https?:\/\/(www\.)?/i, '')
+        .split('/')[0]
+        .toLowerCase();
+      const phoneDigits = String(company.phone ?? '').replace(/\D/g, '');
+      const normName = name.toLowerCase();
+      const isDup =
+        (domain && seenDomains.has(domain)) || (phoneDigits && seenPhones.has(phoneDigits)) || seenNames.has(normName);
+      if (isDup) {
+        excluded.push({ name, reason: 'дубликат по домену/телефону/названию' });
+        continue;
+      }
+      if (domain) seenDomains.add(domain);
+      if (phoneDigits) seenPhones.add(phoneDigits);
+      seenNames.add(normName);
+    }
+
+    let ai = null;
+    if (needsAi) {
+      ai = await classifyForExclusion(openrouter, company, vertical);
+      if (i < candidates.length - 1) await sleep(EXCLUSION_CLASSIFY_DELAY_MS);
+    }
+
+    // Conservative by design (per the brief): review count alone never
+    // excludes — a genuinely great large local business can also have
+    // 500+ reviews. Only acts when the AI independently agrees.
+    if (exclude.federalCorp && (company.reviewCount ?? 0) >= 500 && ai?.isFederalChain) {
+      excluded.push({ name, reason: 'похоже на федеральную сеть/корпорацию (много отзывов + подтверждено AI)' });
+      continue;
+    }
+
+    if (exclude.retailOnly && ai?.isRetailOnly) {
+      excluded.push({ name, reason: ai.reason || 'только розница, без опта/B2B' });
+      continue;
+    }
+
+    if (exclude.microBusiness && ai?.isMicroBusiness) {
+      excluded.push({ name, reason: ai.reason || 'микробизнес без признаков процесса' });
+      continue;
+    }
+
+    kept.push(company);
+  }
+
+  return { kept, excluded };
 }
 
 /**
@@ -188,10 +330,10 @@ async function fetchMissingPhones(parser, openrouter, companies, ctx) {
 /**
  * @param {import('../parser.mjs').ReturnType<typeof import('../parser.mjs').createParserClient>} parser
  * @param {import('../openrouter.mjs').ReturnType<typeof import('../openrouter.mjs').createOpenRouterClient>} openrouter
- * @param {{ runId: string, campaignId: string, niche: string, region: string, limit: number, enrich: boolean }} opts
+ * @param {{ runId: string, campaignId: string, niche: string, region: string, limit: number, enrich: boolean, verticalKey?: string, vertical?: { label?: string } | null, exclude?: Record<string, boolean> }} opts
  */
 export async function runCartographer(parser, openrouter, opts) {
-  const { runId, campaignId, niche, region, limit, enrich } = opts;
+  const { runId, campaignId, niche, region, limit, enrich, verticalKey, vertical, exclude } = opts;
 
   try {
     patchCartographerRun(runId, { stage: 'search' });
@@ -210,8 +352,13 @@ export async function runCartographer(parser, openrouter, opts) {
     const organizations = Array.isArray(page?.data?.organizations) ? page.data.organizations : [];
     const limited = organizations.filter((org) => org?.name).slice(0, limit);
 
-    const toInsert = limited.map((org) => {
-      const company = orgToCompanyRecord(org, { niche, region, campaignId });
+    const candidates = limited.map((org) => orgToCompanyRecord(org, { niche, region, campaignId, verticalKey }));
+
+    patchCartographerRun(runId, { stage: 'exclude' });
+    const { kept, excluded } = await filterExclusions(openrouter, candidates, { vertical: vertical ?? null, exclude: exclude ?? {} });
+    patchCartographerRun(runId, { excludedCount: excluded.length, excluded });
+
+    const toInsert = kept.map((company) => {
       const { score, breakdown } = scoreCompany(company);
       return { ...company, score, score_breakdown: breakdown };
     });
@@ -231,7 +378,19 @@ export async function runCartographer(parser, openrouter, opts) {
         try {
           const enrichment = await enrichCompany(parser, openrouter, company);
           const { score, breakdown } = scoreCompany({ ...company, ...enrichment });
-          updateCompany(company.id, { ...enrichment, score, score_breakdown: breakdown });
+          const updated = updateCompany(company.id, { ...enrichment, score, score_breakdown: breakdown });
+
+          // Opportunity generation costs a full OpenRouter call per company —
+          // only worth it for A/B priority (per the brief: don't burn tokens
+          // drafting outreach for companies already scored as poor fits).
+          if (updated.sales_priority === 'A' || updated.sales_priority === 'B') {
+            try {
+              const audit = getAudit(company.id);
+              await generateOpportunity(openrouter, updated, audit, vertical ?? null);
+            } catch (e) {
+              console.error(`[cartographer] opportunity generation failed for ${company.id}:`, e instanceof Error ? e.message : e);
+            }
+          }
         } catch (e) {
           console.error(`[cartographer] enrich failed for ${company.id}:`, e instanceof Error ? e.message : e);
         }

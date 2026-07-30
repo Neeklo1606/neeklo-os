@@ -1,11 +1,26 @@
-export type CartographerStage = 'search' | 'extract' | 'phones' | 'enrich' | 'score' | 'done';
+export type CartographerStage = 'search' | 'extract' | 'exclude' | 'phones' | 'enrich' | 'score' | 'done';
 export type CartographerStatus = 'running' | 'completed' | 'failed';
+
+export interface ExclusionFilters {
+  retailOnly: boolean;
+  noWebsite: boolean;
+  federalCorp: boolean;
+  microBusiness: boolean;
+  duplicates: boolean;
+}
+
+export interface ExcludedCompany {
+  name: string;
+  reason: string;
+}
 
 export interface CartographerRun {
   id: string;
   status: CartographerStatus;
   stage: CartographerStage;
   found: number;
+  excludedCount: number;
+  excluded: ExcludedCompany[];
   phonesTotal: number;
   phonesFetched: number;
   enriched: number;
@@ -13,6 +28,16 @@ export interface CartographerRun {
   niche: string;
   region: string;
   error: string | null;
+}
+
+export interface Vertical {
+  label: string;
+  active: boolean;
+  subsegments: string[];
+  searchQueries: string[];
+  lookFor: string[];
+  productArchetype: string;
+  excludeIf: string[];
 }
 
 const API_BASE =
@@ -39,7 +64,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
-export async function startCartographerRun(body: { niche: string; region: string; limit: number; enrich: boolean }) {
+export async function startCartographerRun(body: {
+  niche: string;
+  region: string;
+  limit: number;
+  enrich: boolean;
+  verticalKey?: string;
+  exclude?: ExclusionFilters;
+}) {
   return request<{ success: boolean; runId: string; campaignId: string }>('/run', {
     method: 'POST',
     body: JSON.stringify(body),
@@ -48,4 +80,8 @@ export async function startCartographerRun(body: { niche: string; region: string
 
 export async function fetchCartographerRun(runId: string) {
   return request<{ success: boolean } & CartographerRun>(`/run/${encodeURIComponent(runId)}`);
+}
+
+export async function fetchVerticals() {
+  return request<{ success: boolean; verticals: Record<string, Vertical>; secondPriority: string[] }>('/verticals');
 }

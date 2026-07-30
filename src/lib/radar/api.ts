@@ -1,11 +1,14 @@
-export interface RadarChannel {
+export type RadarSourceType = 'telegram' | 'avito' | 'vc' | 'habr' | 'custom';
+
+export interface RadarSource {
   id: string;
-  username: string;
-  title?: string;
+  type: RadarSourceType;
+  identifier: string;
+  label?: string;
   category?: string;
   active: boolean;
-  lastMessageId: number | null;
   lastCheckedAt: string | null;
+  lastItemId: number | string | null;
   createdAt: string;
 }
 
@@ -17,20 +20,47 @@ export interface RadarKeyword {
   createdAt: string;
 }
 
-export type RadarSignalStatus = 'new' | 'replied' | 'irrelevant';
-export type RadarIntent = 'yes' | 'no' | 'unclear';
+export type RadarSignalStatus = 'new' | 'replied' | 'irrelevant' | 'archived';
+export type RadarCategory = 'A' | 'B' | 'C' | 'D';
+export type RadarUrgency = 'high' | 'medium' | 'low';
+
+export interface RadarSignalAiAnalysis {
+  isRequest: boolean;
+  solutionType: string | null;
+  hasNiche: boolean;
+  authorType: 'owner' | 'manager' | 'employee' | 'unknown';
+  isVacancy: boolean;
+  isCompetitorAd: boolean;
+  isStudentProject: boolean;
+  reason: string;
+}
+
+export interface RadarSignalBreakdownRow {
+  criterion: string;
+  points: number;
+  matched: boolean;
+}
 
 export interface RadarSignal {
   id: string;
   channel: string;
-  telegram_message_id: number;
+  telegram_message_id?: number;
+  source_url?: string;
   text: string;
   date: string | null;
   mediaUrl: string | null;
   views: number | null;
   matchedKeywords: string[];
-  aiIntent?: RadarIntent;
+  aiAnalysis?: RadarSignalAiAnalysis;
   aiReason?: string;
+  signal_score?: number;
+  urgency?: RadarUrgency;
+  category?: RadarCategory;
+  breakdown?: RadarSignalBreakdownRow[];
+  evidence?: string;
+  recommended_action?: string;
+  author_name?: string | null;
+  source_name?: string;
   status: RadarSignalStatus;
   leadId?: string;
   foundAt: string;
@@ -97,33 +127,38 @@ export async function convertSignalToLead(id: string) {
   });
 }
 
-export async function fetchRadarChannels() {
-  return request<{ success: boolean; channels: RadarChannel[]; total: number }>('/channels');
+export async function fetchRadarSources() {
+  return request<{ success: boolean; sources: RadarSource[]; total: number }>('/sources');
 }
 
-export async function createRadarChannel(channel: { username: string; title?: string; category?: string }) {
-  return request<{ success: boolean; channel: RadarChannel }>('/channels', {
+export async function createRadarSource(source: {
+  type: RadarSourceType;
+  identifier: string;
+  label?: string;
+  category?: string;
+}) {
+  return request<{ success: boolean; source: RadarSource }>('/sources', {
     method: 'POST',
-    body: JSON.stringify(channel),
+    body: JSON.stringify(source),
   });
 }
 
-export async function createRadarChannelsBulk(usernames: string[]) {
-  return request<{ success: boolean; created: RadarChannel[]; skipped: number; total: number }>('/channels/bulk', {
+export async function createRadarSourcesBulk(usernames: string[]) {
+  return request<{ success: boolean; created: RadarSource[]; skipped: number; total: number }>('/sources/bulk', {
     method: 'POST',
     body: JSON.stringify({ usernames }),
   });
 }
 
-export async function updateRadarChannel(id: string, partial: Partial<RadarChannel>) {
-  return request<{ success: boolean; channel: RadarChannel }>(`/channels/${encodeURIComponent(id)}`, {
+export async function updateRadarSource(id: string, partial: Partial<RadarSource>) {
+  return request<{ success: boolean; source: RadarSource }>(`/sources/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: JSON.stringify(partial),
   });
 }
 
-export async function deleteRadarChannel(id: string) {
-  return request<{ success: boolean; id: string }>(`/channels/${encodeURIComponent(id)}`, {
+export async function deleteRadarSource(id: string) {
+  return request<{ success: boolean; id: string }>(`/sources/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
 }

@@ -1,21 +1,56 @@
-const INTENT_PROMPT = (signalText) => `Определи, ищет ли автор этого сообщения исполнителя для разработки
-сайта, бота, платформы, автоматизации или AI-решения.
+const SOLUTION_TYPES = ['платформа', 'crm', 'бот', 'сайт', 'кабинет', 'каталог', 'бронирование', 'автоматизация'];
+const AUTHOR_TYPES = ['owner', 'manager', 'employee', 'unknown'];
 
-Ответь строго в JSON:
-{"intent": "yes"|"no"|"unclear", "reason": "краткое объяснение до 10 слов"}
+const INTENT_PROMPT = (signalText) => `Проанализируй сообщение. Ответь строго JSON:
+{
+  "isRequest": true|false,
+  "solutionType": "платформа"|"crm"|"бот"|"сайт"|"кабинет"|"каталог"|"бронирование"|"автоматизация"|null,
+  "hasNiche": true|false,
+  "authorType": "owner"|"manager"|"employee"|"unknown",
+  "isVacancy": true|false,
+  "isCompetitorAd": true|false,
+  "isStudentProject": true|false,
+  "reason": "до 15 слов"
+}
 
-yes — автор прямо ищет или спрашивает про исполнителя/цену/подрядчика
-no — обсуждение на тему, жалоба без запроса, реклама, оффтоп
-unclear — непонятно из контекста
+isRequest — это запрос на исполнителя (ищет, кто сделает, разработчика, подрядчика)?
+solutionType — какой тип решения упомянут, если есть; null если не указан или неприменимо
+hasNiche — указан бизнес-контекст/ниша автора (например «у меня стоматология», «для магазина»)?
+authorType — owner (собственник/ИП/фаундер), manager (руководитель/директор направления),
+  employee (рядовой сотрудник без права решения), unknown (не определить из текста)
+isVacancy — это вакансия в штат, а не разовый заказ/проект?
+isCompetitorAd — это реклама студии/фрилансера, предлагающего свои услуги, а не запрос?
+isStudentProject — это учебный/курсовой/дипломный проект без реального бюджета?
+reason — краткое обоснование до 15 слов
 
 Сообщение: «${signalText}»`;
 
 /**
  * @param {import('./openrouter.mjs').ReturnType<typeof import('./openrouter.mjs').createOpenRouterClient>} openrouter
  * @param {string} signalText
- * @returns {Promise<{ intent: 'yes' | 'no' | 'unclear', reason: string }>}
+ * @returns {Promise<{
+ *   isRequest: boolean,
+ *   solutionType: string | null,
+ *   hasNiche: boolean,
+ *   authorType: 'owner' | 'manager' | 'employee' | 'unknown',
+ *   isVacancy: boolean,
+ *   isCompetitorAd: boolean,
+ *   isStudentProject: boolean,
+ *   reason: string,
+ * }>}
  */
 export async function classifyIntent(openrouter, signalText) {
+  const fallback = {
+    isRequest: false,
+    solutionType: null,
+    hasNiche: false,
+    authorType: 'unknown',
+    isVacancy: false,
+    isCompetitorAd: false,
+    isStudentProject: false,
+    reason: 'ошибка классификации',
+  };
+
   try {
     // temperature: 0 for consistency; systemPrompt: null — the default
     // job-planning AGENT_SYSTEM_PROMPT would only confuse this one-off
@@ -27,10 +62,18 @@ export async function classifyIntent(openrouter, signalText) {
 
     const jsonText = content.match(/\{[\s\S]*\}/)?.[0] ?? content;
     const parsed = JSON.parse(jsonText);
-    const intent = ['yes', 'no', 'unclear'].includes(parsed?.intent) ? parsed.intent : 'unclear';
-    const reason = typeof parsed?.reason === 'string' ? parsed.reason : 'ошибка классификации';
-    return { intent, reason };
+
+    return {
+      isRequest: parsed?.isRequest === true,
+      solutionType: SOLUTION_TYPES.includes(parsed?.solutionType) ? parsed.solutionType : null,
+      hasNiche: parsed?.hasNiche === true,
+      authorType: AUTHOR_TYPES.includes(parsed?.authorType) ? parsed.authorType : 'unknown',
+      isVacancy: parsed?.isVacancy === true,
+      isCompetitorAd: parsed?.isCompetitorAd === true,
+      isStudentProject: parsed?.isStudentProject === true,
+      reason: typeof parsed?.reason === 'string' ? parsed.reason : fallback.reason,
+    };
   } catch {
-    return { intent: 'unclear', reason: 'ошибка классификации' };
+    return fallback;
   }
 }

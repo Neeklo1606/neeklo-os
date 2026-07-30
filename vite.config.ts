@@ -39,6 +39,18 @@ export default defineConfig({
         target: 'http://localhost:8787',
         changeOrigin: true,
       },
+      '/api/audits': {
+        target: 'http://localhost:8787',
+        changeOrigin: true,
+      },
+      '/api/opportunities': {
+        target: 'http://localhost:8787',
+        changeOrigin: true,
+      },
+      '/api/reports': {
+        target: 'http://localhost:8787',
+        changeOrigin: true,
+      },
     },
   },
 })

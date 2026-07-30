@@ -11,6 +11,7 @@ import { CampaignsPage } from './pages/CampaignsPage';
 import { OutreachHubPage } from './pages/OutreachHubPage';
 import { ParseLaunchPage } from './pages/ParseLaunchPage';
 import { RadarPage } from './pages/RadarPage';
+import { OpportunitiesPage } from './pages/OpportunitiesPage';
 import { QueuePage } from './pages/QueuePage';
 import { HomePage } from './pages/HomePage';
 import { BrainHudPage } from './pages/BrainHudPage';
@@ -123,6 +124,14 @@ function App() {
           element={
             <AppShell>
               <CompaniesPage />
+            </AppShell>
+          }
+        />
+        <Route
+          path="/opportunities"
+          element={
+            <AppShell>
+              <OpportunitiesPage />
             </AppShell>
           }
         />

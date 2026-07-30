@@ -18,6 +18,7 @@ import {
   Briefcase,
   Wallet,
   Film,
+  Target,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -38,6 +39,7 @@ const navigationSections = [
       { to: '/outreach/agent', label: 'Агент', icon: Bot },
       { to: '/radar', label: 'Радар', icon: RadioTower },
       { to: '/companies', label: 'Компании', icon: Building2 },
+      { to: '/opportunities', label: 'Возможности', icon: Target },
       { to: '/outreach/queue', label: 'Очередь', icon: Send },
     ],
   },

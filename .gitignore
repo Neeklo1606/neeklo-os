@@ -35,6 +35,10 @@ data/campaigns.json
 data/campaigns.json.tmp
 data/radar.json
 data/radar.json.tmp
+data/digital-audit.json
+data/digital-audit.json.tmp
+data/opportunities.json
+data/opportunities.json.tmp
 
 # Contains plaintext admin-scope neekloai.ru API key — never commit
 NEEKLO_USER_GUIDE.ru*.md

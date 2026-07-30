@@ -37,7 +37,7 @@ export function Modal({ open, onClose, title, children, size = 'md' }: ModalProp
         onClick={onClose}
       />
       {/* Panel */}
-      <div className={`relative z-10 w-full ${sizeClasses[size]} animate-in fade-in zoom-in-95 rounded-2xl border border-[rgba(0,0,0,0.08)] bg-white p-6 shadow-xl duration-200`}>
+      <div className={`relative z-10 max-h-[90vh] w-full ${sizeClasses[size]} animate-in fade-in zoom-in-95 overflow-y-auto rounded-2xl border border-[rgba(0,0,0,0.08)] bg-white p-6 shadow-xl duration-200`}>
         <div className="mb-5 flex items-center justify-between">
           <h2 className="text-lg font-bold text-foreground">{title}</h2>
           <button

@@ -87,6 +87,50 @@ export interface CompanyScoreBreakdown {
 
 export type DesignAge = 'modern' | 'dated' | 'very-old';
 
+/** Matches server/audit-db.mjs's DigitalAudit typedef exactly — one record per company. */
+export interface DigitalAudit {
+  id: string;
+  company_id: string;
+  website_exists?: boolean;
+  https?: boolean;
+  mobile_status?: 'good' | 'issues' | 'unknown';
+  site_speed_note?: string | null;
+  form_exists?: boolean;
+  booking_exists?: boolean;
+  catalog_exists?: boolean;
+  personal_account_exists?: boolean;
+  dealer_section_exists?: boolean;
+  messenger_links?: string[];
+  analytics_detected?: boolean;
+  crm_widget_detected?: boolean;
+  key_conversion_path?: string;
+  observed_gap?: string;
+  proof_url?: string | null;
+  audit_confidence?: 'high' | 'medium' | 'low';
+  human_review_required?: boolean;
+  growth_signals?: string[];
+  audited_at: string;
+}
+
+/** Matches server/opportunities-db.mjs's Opportunity typedef — a company can have several over time. */
+export interface Opportunity {
+  opportunity_id: string;
+  company_id: string;
+  product_archetype?: string | null;
+  problem_hypothesis?: string;
+  evidence_summary?: string;
+  fit_score?: number | null;
+  potential_budget_range?: string;
+  sales_priority?: 'A' | 'B' | 'C' | 'D' | null;
+  recommended_offer?: string;
+  next_step?: string;
+  personalized_angle?: string;
+  message_draft?: string;
+  human_approval?: 'required' | 'approved' | 'rejected';
+  outcome?: string;
+  created_at: string;
+}
+
 export interface Company {
   id: string;
   name: string;
@@ -147,8 +191,31 @@ export interface Company {
   socialTelegram?: string | null;
   designAge?: DesignAge | null;
   auditText?: string | null;
+  // Denormalized from the full audit-db.mjs record (server/audit-db.mjs) for
+  // fast table filtering — the full record lives in Digital Audit, fetched
+  // separately per company (src/lib/companies/audits-api.ts).
+  hasWebsite?: boolean | null;
+  hasBooking?: boolean | null;
+  hasDealerSection?: boolean | null;
   // Set by server/jobs/cartographer-run.mjs so /companies can filter by run.
   campaignId?: string | null;
+  // ── strategy fields (server/verticals.mjs taxonomy + server/score-fit.mjs) ──
+  vertical?: 'manufacturers' | 'glamping' | 'b2bServices' | null;
+  subsegment?: string | null;
+  legal_name?: string | null;
+  maps_url?: string | null;
+  avito_url?: string | null;
+  telegram_url?: string | null;
+  vk_url?: string | null;
+  email_public?: string | null;
+  first_seen_at?: string | null;
+  last_checked_at?: string | null;
+  data_confidence?: 'high' | 'medium' | 'low' | null;
+  decision_maker?: string | null;
+  decision_maker_role?: string | null;
+  fit_score?: number | null;
+  fit_breakdown?: Record<string, unknown> | null;
+  sales_priority?: 'A' | 'B' | 'C' | 'D' | null;
 }
 
 export const STATUS_COLUMNS: { key: LeadStatus; label: string; color: string }[] = [

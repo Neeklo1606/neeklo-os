@@ -14,8 +14,19 @@ import { createRun, getRun, patchRun } from './run-store.mjs';
 import { runRadarCheck } from './jobs/radar-check.mjs';
 import { enrichCompany } from './enrich-company.mjs';
 import { scoreCompany } from './score-company.mjs';
+import { scoreFit } from './score-fit.mjs';
 import { createCartographerRun, getCartographerRun } from './cartographer-store.mjs';
 import { runCartographer } from './jobs/cartographer-run.mjs';
+import { generateOpportunity } from './generate-opportunity.mjs';
+import {
+  buildMorningReport,
+  buildEveningReport,
+  buildWeeklyMetrics,
+  sendMorningReport,
+  sendEveningReport,
+} from './jobs/daily-report.mjs';
+import { VERTICALS, SECOND_PRIORITY } from './verticals.mjs';
+import { notifyHotSignal } from './notify-telegram.mjs';
 import {
   listCompanies,
   getCompany,
@@ -32,6 +43,13 @@ import {
   updateLead,
   deleteLead,
 } from './leads-db.mjs';
+import { listAudits, getAudit, upsertAudit } from './audit-db.mjs';
+import {
+  listOpportunities,
+  getOpportunity,
+  createOpportunity,
+  updateOpportunity,
+} from './opportunities-db.mjs';
 import {
   listCampaigns,
   getCampaign,
@@ -48,11 +66,11 @@ import {
   deleteSession,
 } from './agent-sessions-db.mjs';
 import {
-  listChannels,
-  createChannel,
-  createChannels,
-  updateChannel as updateRadarChannel,
-  deleteChannel,
+  listSources,
+  createSource,
+  createSourcesBulk,
+  updateSource,
+  deleteSource,
   listKeywords,
   createKeyword,
   deleteKeyword,
@@ -126,6 +144,16 @@ function withScore(company) {
   return { ...company, ...scoreFields(scoreCompany(company)) };
 }
 
+/**
+ * fit_score is a separate axis from `score` (see server/score-fit.mjs's
+ * own header) — stored under its own fields so recomputing one never
+ * clobbers the other.
+ * @param {ReturnType<typeof scoreFit>} result
+ */
+function fitScoreFields(result) {
+  return { fit_score: result.fit_score, fit_breakdown: result.breakdown, sales_priority: result.sales_priority };
+}
+
 function configStatus(config) {
   return {
     parserKey: Boolean(config.neekloApiKey),
@@ -135,14 +163,26 @@ function configStatus(config) {
   };
 }
 
-const RADAR_CRON_EXPRESSION = '*/15 * * * *';
-const RADAR_INTERVAL_MS = 15 * 60 * 1000;
-// In-memory only — deliberately not persisted, mirrors run-store.mjs's approach
-// for the maps job-plan runs. nextRunAt is an approximation (lastRun + 15min),
-// not the exact cron wall-clock boundary '*/15 * * * *' actually fires on.
+// Separate cron schedules per strategy doc, not one shared loop — different
+// sources have very different useful-check frequencies (a Telegram channel
+// posts constantly; Avito/VC.ru/Habr search results barely change hour to
+// hour). All three still funnel through the same runRadarCheckGuarded, whose
+// `running` flag keeps them from overlapping — the parser is one sequential
+// worker (docs), so two radar checks in flight at once would just queue
+// behind each other anyway.
+const TELEGRAM_CRON_EXPRESSION = '*/30 * * * *'; // every 30 min
+const AVITO_CRON_EXPRESSION = '0 */6 * * *'; // every 6 hours
+const DAILY_CRON_EXPRESSION = '0 6 * * *'; // once/day — vc + habr
+const TELEGRAM_INTERVAL_MS = 30 * 60 * 1000;
+
+// In-memory only — deliberately not persisted, mirrors run-store.mjs's
+// approach for the maps job-plan runs. nextRunAt approximates the most
+// frequent schedule (Telegram, every 30min) since that's the one a human
+// checking "when's the next run" cares about; it's not literally the next
+// firing of whichever cron happens to be soonest.
 const radarState = { lastRunAt: null, nextRunAt: null, running: false };
 
-/** @param {{ manual?: boolean }} [opts] */
+/** @param {{ manual?: boolean, sourceTypes?: string[] }} [opts] */
 async function runRadarCheckGuarded(opts = {}) {
   if (radarState.running) {
     console.log('[radar] skip — previous run still in progress');
@@ -156,7 +196,7 @@ async function runRadarCheckGuarded(opts = {}) {
   } finally {
     radarState.running = false;
     radarState.lastRunAt = new Date().toISOString();
-    radarState.nextRunAt = new Date(Date.now() + RADAR_INTERVAL_MS).toISOString();
+    radarState.nextRunAt = new Date(Date.now() + TELEGRAM_INTERVAL_MS).toISOString();
   }
 }
 
@@ -254,6 +294,49 @@ async function main() {
         return;
       }
 
+      // Verification route — builds a synthetic category-A signal (or one
+      // overridden from the request body) and sends it through the real
+      // notifyHotSignal pipeline, so you can confirm TELEGRAM_BOT_TOKEN/
+      // TELEGRAM_CHAT_ID and message formatting without waiting for a real
+      // hot signal. No `id`, so notifiedAt never gets persisted for it —
+      // safe to call repeatedly.
+      if (path === '/api/radar/test-notification' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const testSignal = {
+          channel: body.channel ?? 'test_channel',
+          telegram_message_id: body.telegram_message_id ?? 1,
+          text: body.text ?? 'Тестовый сигнал: ищем срочно кто сделает CRM для нашего автосервиса, бюджет до 300 тысяч',
+          date: body.date ?? new Date().toISOString(),
+          foundAt: new Date().toISOString(),
+          signal_score: body.signal_score ?? 85,
+          category: 'A',
+          breakdown: body.breakdown ?? [
+            { criterion: 'Прямой запрос', points: 35, matched: true },
+            { criterion: 'Указан бюджет', points: 15, matched: true },
+          ],
+          aiAnalysis: body.aiAnalysis ?? {
+            isRequest: true,
+            solutionType: 'crm',
+            hasNiche: true,
+            authorType: 'owner',
+            isVacancy: false,
+            isCompetitorAd: false,
+            isStudentProject: false,
+            reason: 'test-notification route',
+          },
+          author_name: body.author_name ?? null,
+          source_name: body.source_name ?? 'telegram',
+        };
+        const sent = await notifyHotSignal(testSignal, body.company ?? null);
+        sendJson(res, sent ? 200 : 502, {
+          success: sent,
+          message: sent
+            ? 'Notification sent'
+            : 'Failed to send — check TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID and server logs',
+        });
+        return;
+      }
+
       // ——— Radar: signals ———
       if (path === '/api/radar/signals' && req.method === 'GET') {
         const allSignals = listSignals({
@@ -297,46 +380,52 @@ async function main() {
       const radarSignalMatch = path.match(/^\/api\/radar\/signals\/([^/]+)$/);
       if (radarSignalMatch && req.method === 'PATCH') {
         const body = await readJsonBody(req);
+        // Stamped on the transition so the evening report can tell "replied
+        // today" from "replied at some unknown past point" — see
+        // server/jobs/daily-report.mjs's buildEveningReport doc comment.
+        if (body.status === 'replied' && !body.repliedAt) {
+          body.repliedAt = new Date().toISOString();
+        }
         const signal = updateSignal(decodeURIComponent(radarSignalMatch[1]), body);
         sendJson(res, 200, { success: true, signal });
         return;
       }
 
-      // ——— Radar: channels ———
-      if (path === '/api/radar/channels' && req.method === 'GET') {
-        const channels = listChannels();
-        sendJson(res, 200, { success: true, channels, total: channels.length });
+      // ——— Radar: sources (Telegram channels + Avito/VC.ru/Habr searches) ———
+      if (path === '/api/radar/sources' && req.method === 'GET') {
+        const sources = listSources();
+        sendJson(res, 200, { success: true, sources, total: sources.length });
         return;
       }
 
-      if (path === '/api/radar/channels/bulk' && req.method === 'POST') {
+      if (path === '/api/radar/sources/bulk' && req.method === 'POST') {
         const body = await readJsonBody(req);
         const lines = typeof body.usernames === 'string' ? body.usernames.split('\n') : body.usernames;
-        const { created, skipped } = createChannels(Array.isArray(lines) ? lines : []);
+        const { created, skipped } = createSourcesBulk(Array.isArray(lines) ? lines : []);
         sendJson(res, 201, { success: true, created, skipped, total: created.length });
         return;
       }
 
-      if (path === '/api/radar/channels' && req.method === 'POST') {
+      if (path === '/api/radar/sources' && req.method === 'POST') {
         const body = await readJsonBody(req);
-        const channel = createChannel(body);
-        sendJson(res, 201, { success: true, channel });
+        const source = createSource(body);
+        sendJson(res, 201, { success: true, source });
         return;
       }
 
-      const radarChannelMatch = path.match(/^\/api\/radar\/channels\/([^/]+)$/);
-      if (radarChannelMatch) {
-        const channelId = decodeURIComponent(radarChannelMatch[1]);
+      const radarSourceMatch = path.match(/^\/api\/radar\/sources\/([^/]+)$/);
+      if (radarSourceMatch) {
+        const sourceId = decodeURIComponent(radarSourceMatch[1]);
 
         if (req.method === 'PATCH') {
           const body = await readJsonBody(req);
-          const channel = updateRadarChannel(channelId, body);
-          sendJson(res, 200, { success: true, channel });
+          const source = updateSource(sourceId, body);
+          sendJson(res, 200, { success: true, source });
           return;
         }
 
         if (req.method === 'DELETE') {
-          const result = deleteChannel(channelId);
+          const result = deleteSource(sourceId);
           sendJson(res, 200, { success: true, ...result });
           return;
         }
@@ -539,6 +628,17 @@ async function main() {
         return;
       }
 
+      if (path === '/api/companies/score-fit-all' && req.method === 'POST') {
+        const companies = listCompanies();
+        const scored = companies.map((c) => {
+          const audit = getAudit(c.id);
+          const vertical = c.vertical ? (VERTICALS[c.vertical] ?? null) : null;
+          return updateCompany(c.id, fitScoreFields(scoreFit(c, audit, vertical)));
+        });
+        sendJson(res, 200, { success: true, scored, total: scored.length });
+        return;
+      }
+
       const companyScoreMatch = path.match(/^\/api\/companies\/([^/]+)\/score$/);
       if (companyScoreMatch && req.method === 'POST') {
         const companyId = decodeURIComponent(companyScoreMatch[1]);
@@ -552,13 +652,42 @@ async function main() {
         return;
       }
 
+      const companyGenerateOpportunityMatch = path.match(/^\/api\/companies\/([^/]+)\/generate-opportunity$/);
+      if (companyGenerateOpportunityMatch && req.method === 'POST') {
+        const companyId = decodeURIComponent(companyGenerateOpportunityMatch[1]);
+        const company = getCompany(companyId);
+        if (!company) {
+          sendJson(res, 404, { success: false, error: 'Company not found' });
+          return;
+        }
+        const audit = getAudit(companyId);
+        const vertical = company.vertical ? (VERTICALS[company.vertical] ?? null) : null;
+        const opportunity = await generateOpportunity(openrouter, company, audit, vertical);
+        sendJson(res, 201, { success: true, opportunity });
+        return;
+      }
+
       // ——— Cartographer (deterministic 2GIS pipeline — see server/jobs/cartographer-run.mjs) ———
+      if (path === '/api/cartographer/verticals' && req.method === 'GET') {
+        sendJson(res, 200, { success: true, verticals: VERTICALS, secondPriority: SECOND_PRIORITY });
+        return;
+      }
+
       if (path === '/api/cartographer/run' && req.method === 'POST') {
         const body = await readJsonBody(req);
         const niche = String(body?.niche ?? '').trim();
         const region = String(body?.region ?? '').trim();
         const limit = [10, 25, 50].includes(Number(body?.limit)) ? Number(body.limit) : 10;
         const enrich = Boolean(body?.enrich);
+        const verticalKey = typeof body?.verticalKey === 'string' ? body.verticalKey.trim() : '';
+        const vertical = verticalKey ? (VERTICALS[verticalKey] ?? null) : null;
+        const exclude = {
+          retailOnly: Boolean(body?.exclude?.retailOnly),
+          noWebsite: Boolean(body?.exclude?.noWebsite),
+          federalCorp: Boolean(body?.exclude?.federalCorp),
+          microBusiness: Boolean(body?.exclude?.microBusiness),
+          duplicates: Boolean(body?.exclude?.duplicates),
+        };
 
         if (!niche || !region) {
           sendJson(res, 400, { success: false, error: 'niche and region are required' });
@@ -581,9 +710,17 @@ async function main() {
         });
 
         const runId = createCartographerRun({ campaignId: campaign.id, niche, region });
-        runCartographer(parser, openrouter, { runId, campaignId: campaign.id, niche, region, limit, enrich }).catch(
-          (err) => console.error('[cartographer] run failed:', err),
-        );
+        runCartographer(parser, openrouter, {
+          runId,
+          campaignId: campaign.id,
+          niche,
+          region,
+          limit,
+          enrich,
+          verticalKey: verticalKey || undefined,
+          vertical,
+          exclude,
+        }).catch((err) => console.error('[cartographer] run failed:', err));
 
         sendJson(res, 202, { success: true, runId, campaignId: campaign.id });
         return;
@@ -597,6 +734,158 @@ async function main() {
           return;
         }
         sendJson(res, 200, { success: true, ...run });
+        return;
+      }
+
+      // ——— Digital Audit (one record per company — server/audit-db.mjs) ———
+      if (path === '/api/audits' && req.method === 'GET') {
+        const humanReviewParam = url.searchParams.get('humanReviewRequired');
+        const audits = listAudits(
+          humanReviewParam != null ? { humanReviewRequired: humanReviewParam === 'true' } : {},
+        );
+        sendJson(res, 200, { success: true, audits, total: audits.length });
+        return;
+      }
+
+      if (path === '/api/audits' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const companyId = String(body?.company_id ?? '').trim();
+        if (!companyId) {
+          sendJson(res, 400, { success: false, error: 'company_id is required' });
+          return;
+        }
+        const audit = upsertAudit(companyId, body);
+        sendJson(res, 201, { success: true, audit });
+        return;
+      }
+
+      const auditMatch = path.match(/^\/api\/audits\/([^/]+)$/);
+      if (auditMatch && req.method === 'GET') {
+        const audit = getAudit(decodeURIComponent(auditMatch[1]));
+        if (!audit) {
+          sendJson(res, 404, { success: false, error: 'Audit not found' });
+          return;
+        }
+        sendJson(res, 200, { success: true, audit });
+        return;
+      }
+
+      if (auditMatch && req.method === 'PUT') {
+        const body = await readJsonBody(req);
+        const audit = upsertAudit(decodeURIComponent(auditMatch[1]), body);
+        sendJson(res, 200, { success: true, audit });
+        return;
+      }
+
+      // ——— Opportunities (server/opportunities-db.mjs) ———
+      if (path === '/api/opportunities/generate-batch' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const companyIds = (Array.isArray(body?.companyIds) ? body.companyIds : []).slice(0, 20);
+        const generated = [];
+        const failed = [];
+
+        for (let i = 0; i < companyIds.length; i += 1) {
+          const companyId = companyIds[i];
+          const company = getCompany(companyId);
+          if (!company) {
+            failed.push({ id: companyId, error: 'Company not found' });
+          } else {
+            try {
+              const audit = getAudit(companyId);
+              const vertical = company.vertical ? (VERTICALS[company.vertical] ?? null) : null;
+              const opportunity = await generateOpportunity(openrouter, company, audit, vertical);
+              generated.push(opportunity);
+            } catch (e) {
+              failed.push({ id: companyId, error: e instanceof Error ? e.message : 'Generation failed' });
+            }
+          }
+          if (i < companyIds.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          }
+        }
+
+        sendJson(res, 200, { success: true, generated, failed });
+        return;
+      }
+
+      if (path === '/api/opportunities' && req.method === 'GET') {
+        const opportunities = listOpportunities({
+          companyId: url.searchParams.get('companyId') ?? undefined,
+          salesPriority: url.searchParams.get('salesPriority') ?? undefined,
+          humanApproval: url.searchParams.get('humanApproval') ?? undefined,
+          outcome: url.searchParams.get('outcome') ?? undefined,
+        });
+        sendJson(res, 200, { success: true, opportunities, total: opportunities.length });
+        return;
+      }
+
+      if (path === '/api/opportunities' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const companyId = String(body?.company_id ?? '').trim();
+        if (!companyId) {
+          sendJson(res, 400, { success: false, error: 'company_id is required' });
+          return;
+        }
+        const opportunity = createOpportunity(body);
+        sendJson(res, 201, { success: true, opportunity });
+        return;
+      }
+
+      const opportunityMatch = path.match(/^\/api\/opportunities\/([^/]+)$/);
+      if (opportunityMatch && req.method === 'GET') {
+        const opportunity = getOpportunity(decodeURIComponent(opportunityMatch[1]));
+        if (!opportunity) {
+          sendJson(res, 404, { success: false, error: 'Opportunity not found' });
+          return;
+        }
+        sendJson(res, 200, { success: true, opportunity });
+        return;
+      }
+
+      if (opportunityMatch && req.method === 'PUT') {
+        const body = await readJsonBody(req);
+        // Stamped on the transition so the evening report can tell "sent
+        // today" from "approved at some unknown past point" — see
+        // server/jobs/daily-report.mjs's buildEveningReport doc comment.
+        if (body.human_approval === 'approved' && !body.approved_at) {
+          body.approved_at = new Date().toISOString();
+        }
+        if (body.human_approval === 'rejected' && !body.rejected_at) {
+          body.rejected_at = new Date().toISOString();
+        }
+        const opportunity = updateOpportunity(decodeURIComponent(opportunityMatch[1]), body);
+        sendJson(res, 200, { success: true, opportunity });
+        return;
+      }
+
+      // ——— Daily/weekly reports (server/jobs/daily-report.mjs) ———
+      if (path === '/api/reports/morning' && req.method === 'GET') {
+        const report = await buildMorningReport();
+        sendJson(res, 200, { success: true, report });
+        return;
+      }
+
+      if (path === '/api/reports/evening' && req.method === 'GET') {
+        const report = await buildEveningReport();
+        sendJson(res, 200, { success: true, report });
+        return;
+      }
+
+      if (path === '/api/reports/weekly' && req.method === 'GET') {
+        const report = await buildWeeklyMetrics();
+        sendJson(res, 200, { success: true, report });
+        return;
+      }
+
+      if (path === '/api/reports/send-now' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const type = body?.type === 'evening' ? 'evening' : body?.type === 'morning' ? 'morning' : null;
+        if (!type) {
+          sendJson(res, 400, { success: false, error: "type must be 'morning' or 'evening'" });
+          return;
+        }
+        const { report, sent } = type === 'morning' ? await sendMorningReport() : await sendEveningReport();
+        sendJson(res, 200, { success: true, report, sent });
         return;
       }
 
@@ -845,11 +1134,24 @@ async function main() {
     console.log(`  Campaigns DB: ${process.env.CAMPAIGNS_DATABASE_PATH ?? './data/campaigns.json'}`);
     console.log(`  Agent chats:  ${process.env.AGENT_SESSIONS_DATABASE_PATH ?? './data/agent-sessions.json'}`);
     console.log(`  Static: ${existsSync(DIST_DIR) ? 'dist/' : 'none (run npm run build)'}`);
-    console.log(`  Radar DB: ${process.env.RADAR_DATABASE_PATH ?? './data/radar.json'} (every 15min + 30s after start)`);
+    console.log(
+      `  Radar DB: ${process.env.RADAR_DATABASE_PATH ?? './data/radar.json'} (telegram every 30min, avito every 6h, vc/habr daily + all checked 30s after start)`,
+    );
   });
 
-  cron.schedule(RADAR_CRON_EXPRESSION, () => runRadarCheckGuarded().catch(console.error));
+  cron.schedule(TELEGRAM_CRON_EXPRESSION, () =>
+    runRadarCheckGuarded({ sourceTypes: ['telegram'] }).catch(console.error),
+  );
+  cron.schedule(AVITO_CRON_EXPRESSION, () => runRadarCheckGuarded({ sourceTypes: ['avito'] }).catch(console.error));
+  cron.schedule(DAILY_CRON_EXPRESSION, () =>
+    runRadarCheckGuarded({ sourceTypes: ['vc', 'habr'] }).catch(console.error),
+  );
   setTimeout(() => runRadarCheckGuarded().catch(console.error), 30_000);
+
+  // Explicit Moscow timezone — 09:00/18:00 are meant as MSK wall-clock
+  // times regardless of the server host's own timezone.
+  cron.schedule('0 9 * * *', () => sendMorningReport().catch(console.error), { timezone: 'Europe/Moscow' });
+  cron.schedule('0 18 * * *', () => sendEveningReport().catch(console.error), { timezone: 'Europe/Moscow' });
 }
 
 main().catch((err) => {

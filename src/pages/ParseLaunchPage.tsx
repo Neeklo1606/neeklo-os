@@ -1,28 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Check, CheckCircle2 } from 'lucide-react';
+import { Check, CheckCircle2, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
-import { startCartographerRun, fetchCartographerRun, type CartographerRun, type CartographerStage } from '../lib/cartographer/api';
+import {
+  startCartographerRun,
+  fetchCartographerRun,
+  fetchVerticals,
+  type CartographerRun,
+  type CartographerStage,
+  type Vertical,
+  type ExclusionFilters,
+} from '../lib/cartographer/api';
 
 type PageState = 'form' | 'running';
 type StepStatus = 'pending' | 'active' | 'done';
 type LimitOption = 10 | 25 | 50;
-
-// The 10 priority niches — deterministic pipeline, no free-text niche input
-// (unlike the LLM chat planner in AgentPage, which accepts anything).
-const NICHES = [
-  'Стоматологии и клиники',
-  'Автосервисы',
-  'Магазины с доставкой',
-  'Глэмпинги и базы отдыха',
-  'Производители и трейдеры',
-  'Оптовая торговля продуктами',
-  'Юридические и консалтинг',
-  'Селлеры WB/Ozon',
-  'Салоны красоты',
-  'Промышленные B2B',
-] as const;
 
 const LIMIT_OPTIONS: LimitOption[] = [10, 25, 50];
 const POLL_INTERVAL_MS = 3000;
@@ -30,6 +23,7 @@ const POLL_INTERVAL_MS = 3000;
 const STEPS_WITH_ENRICH: { key: CartographerStage; label: string }[] = [
   { key: 'search', label: 'Поиск компаний' },
   { key: 'extract', label: 'Извлечение данных' },
+  { key: 'exclude', label: 'Фильтрация' },
   { key: 'phones', label: 'Дозапрос телефонов' },
   { key: 'enrich', label: 'Проверка сайтов' },
   { key: 'score', label: 'Скоринг' },
@@ -37,8 +31,40 @@ const STEPS_WITH_ENRICH: { key: CartographerStage; label: string }[] = [
 const STEPS_WITHOUT_ENRICH: { key: CartographerStage; label: string }[] = [
   { key: 'search', label: 'Поиск компаний' },
   { key: 'extract', label: 'Извлечение данных' },
+  { key: 'exclude', label: 'Фильтрация' },
   { key: 'phones', label: 'Дозапрос телефонов' },
 ];
+
+const EXCLUSION_OPTIONS: { key: keyof ExclusionFilters; label: string }[] = [
+  { key: 'retailOnly', label: 'Мелкую розницу без оптового направления' },
+  { key: 'noWebsite', label: 'Компании без сайта' },
+  { key: 'federalCorp', label: 'Федеральные корпорации без локального ЛПР' },
+  { key: 'microBusiness', label: 'Микробизнес (1 сотрудник, нет признаков процесса)' },
+  { key: 'duplicates', label: 'Дубликаты по домену/телефону/названию' },
+];
+
+/**
+ * Pre-checks each of the 5 fixed exclusion boxes based on whether the
+ * selected vertical's own excludeIf text (free-form per vertical, e.g.
+ * manufacturers: ['розница без опта', 'нет сайта', 'федеральная
+ * корпорация']) actually mentions that concept — a vertical whose
+ * excludeIf doesn't mention retail/website/federal/micro-business at all
+ * (glamping's is "менее 3 объектов" / "только через агрегатор", neither
+ * matches any of the 5) genuinely defaults those boxes unchecked rather
+ * than pretending a match exists. "Дубликаты" has no vertical-text
+ * equivalent at all — it's data hygiene, not a business judgment call, so
+ * it defaults on regardless of vertical.
+ */
+function defaultExclusionsForVertical(vertical: Vertical | null): ExclusionFilters {
+  const text = (vertical?.excludeIf ?? []).join(' ').toLowerCase();
+  return {
+    retailOnly: /розниц/.test(text),
+    noWebsite: /сайт/.test(text),
+    federalCorp: /федерал|корпораци/.test(text),
+    microBusiness: /один сотрудник|микробизнес/.test(text),
+    duplicates: true,
+  };
+}
 
 function StepIndicator({ status }: { status: StepStatus }) {
   if (status === 'done') {
@@ -76,7 +102,14 @@ export function ParseLaunchPage() {
   const navigate = useNavigate();
 
   const [pageState, setPageState] = useState<PageState>('form');
-  const [niche, setNiche] = useState('');
+  const [verticals, setVerticals] = useState<Record<string, Vertical> | null>(null);
+  const [secondPriority, setSecondPriority] = useState<string[]>([]);
+  const [verticalsLoading, setVerticalsLoading] = useState(true);
+  const [selectedVerticalKey, setSelectedVerticalKey] = useState('');
+  const [selectedSubsegment, setSelectedSubsegment] = useState('');
+  const [showSecondPriority, setShowSecondPriority] = useState(false);
+  const [exclude, setExclude] = useState<ExclusionFilters>(defaultExclusionsForVertical(null));
+  const [showExcluded, setShowExcluded] = useState(false);
   const [region, setRegion] = useState('');
   const [limit, setLimit] = useState<LimitOption>(10);
   const [enrich, setEnrich] = useState(true);
@@ -89,6 +122,31 @@ export function ParseLaunchPage() {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    fetchVerticals()
+      .then((res) => {
+        setVerticals(res.verticals);
+        setSecondPriority(res.secondPriority);
+      })
+      .catch(() => toast.error('Не удалось загрузить список ниш'))
+      .finally(() => setVerticalsLoading(false));
+  }, []);
+
+  const activeVerticals = verticals
+    ? Object.entries(verticals).filter(([, v]) => v.active)
+    : [];
+  const selectedVertical = selectedVerticalKey ? (verticals?.[selectedVerticalKey] ?? null) : null;
+  // Subsegment narrows the search; without one, the vertical's own label
+  // is the niche (matches subsegments' role as the taxonomy's display layer).
+  const niche = selectedSubsegment || selectedVertical?.label || '';
+
+  const handleVerticalSelect = (key: string) => {
+    const nextKey = key === selectedVerticalKey ? '' : key;
+    setSelectedVerticalKey(nextKey);
+    setSelectedSubsegment('');
+    setExclude(defaultExclusionsForVertical(nextKey ? (verticals?.[nextKey] ?? null) : null));
+  };
 
   const steps = enrich ? STEPS_WITH_ENRICH : STEPS_WITHOUT_ENRICH;
   const stageIndex = run ? steps.findIndex((s) => s.key === run.stage) : -1;
@@ -112,6 +170,8 @@ export function ParseLaunchPage() {
         region: region.trim(),
         limit,
         enrich,
+        verticalKey: selectedVerticalKey || undefined,
+        exclude,
       });
 
       setRun({
@@ -119,6 +179,8 @@ export function ParseLaunchPage() {
         status: 'running',
         stage: 'search',
         found: 0,
+        excludedCount: 0,
+        excluded: [],
         phonesTotal: 0,
         phonesFetched: 0,
         enriched: 0,
@@ -166,29 +228,130 @@ export function ParseLaunchPage() {
             </header>
 
             <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-6">
-              {/* Field 1 — Niche */}
+              {/* Field 1 — Vertical */}
               <div>
-                <label
-                  htmlFor="niche"
-                  className="mb-2 block text-[10px] font-medium uppercase tracking-widest text-text-muted"
-                >
-                  Ниша
-                </label>
-                <select
-                  id="niche"
-                  required
-                  value={niche}
-                  onChange={(e) => setNiche(e.target.value)}
-                  className="h-11 w-full rounded-xl border border-border bg-bento-base px-4 text-sm text-text-primary transition-colors focus:border-accent focus:outline-none"
-                >
-                  <option value="">Выберите нишу</option>
-                  {NICHES.map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))}
-                </select>
+                <p className="mb-2 text-[10px] font-medium uppercase tracking-widest text-text-muted">
+                  Вертикаль
+                </p>
+                {verticalsLoading ? (
+                  <p className="text-sm text-text-muted">Загрузка ниш…</p>
+                ) : (
+                  <div className="grid grid-cols-1 gap-2">
+                    {activeVerticals.map(([key, v]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => handleVerticalSelect(key)}
+                        className={cn(
+                          'rounded-xl border p-3 text-left transition-colors',
+                          selectedVerticalKey === key
+                            ? 'border-accent bg-card-blue'
+                            : 'border-border bg-bento-base hover:border-accent/40',
+                        )}
+                      >
+                        <p className="text-sm font-medium text-text-primary">{v.label}</p>
+                        <p className="mt-0.5 text-xs text-text-muted">{v.subsegments.length} подсегментов</p>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
+
+              {/* Subsegment — optional narrowing within the selected vertical */}
+              {selectedVertical && (
+                <div>
+                  <label
+                    htmlFor="subsegment"
+                    className="mb-2 block text-[10px] font-medium uppercase tracking-widest text-text-muted"
+                  >
+                    Подсегмент (необязательно)
+                  </label>
+                  <select
+                    id="subsegment"
+                    value={selectedSubsegment}
+                    onChange={(e) => setSelectedSubsegment(e.target.value)}
+                    className="h-11 w-full rounded-xl border border-border bg-bento-base px-4 text-sm text-text-primary transition-colors focus:border-accent focus:outline-none"
+                  >
+                    <option value="">Вся вертикаль — {selectedVertical.label}</option>
+                    {selectedVertical.subsegments.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* Context — what the system looks for + the product it implies */}
+              {selectedVertical && (
+                <div className="rounded-xl border border-border bg-bento-base p-4">
+                  <p className="text-[10px] font-medium uppercase tracking-widest text-text-muted">
+                    Что ищет система
+                  </p>
+                  <ul className="mt-2 space-y-1">
+                    {selectedVertical.lookFor.map((hint) => (
+                      <li key={hint} className="flex items-start gap-1.5 text-xs text-text-body">
+                        <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-accent" />
+                        {hint}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="mt-3 text-[10px] font-medium uppercase tracking-widest text-text-muted">
+                    Продукт
+                  </p>
+                  <p className="mt-1 text-xs text-text-body">{selectedVertical.productArchetype}</p>
+                </div>
+              )}
+
+              {/* Exclude — controls server/jobs/cartographer-run.mjs's exclusion
+                  filter; collecting everything unfiltered is explicitly the
+                  wrong outcome here, not just noisy. */}
+              {selectedVertical && (
+                <div>
+                  <p className="mb-2 text-[10px] font-medium uppercase tracking-widest text-text-muted">
+                    Исключить
+                  </p>
+                  <div className="flex flex-col gap-2 rounded-xl border border-border bg-bento-base p-3">
+                    {EXCLUSION_OPTIONS.map((opt) => (
+                      <label key={opt.key} className="flex cursor-pointer items-start gap-2.5 text-sm text-text-body">
+                        <input
+                          type="checkbox"
+                          checked={exclude[opt.key]}
+                          onChange={(e) => setExclude({ ...exclude, [opt.key]: e.target.checked })}
+                          className="mt-0.5 h-4 w-4 rounded border-border accent-accent"
+                        />
+                        {opt.label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Second-priority niches — reference only, not selectable */}
+              {secondPriority.length > 0 && (
+                <details
+                  className="rounded-xl border border-border bg-bento-base"
+                  open={showSecondPriority}
+                  onToggle={(e) => setShowSecondPriority((e.target as HTMLDetailsElement).open)}
+                >
+                  <summary className="flex cursor-pointer list-none items-center justify-between p-3 text-xs font-medium text-text-muted">
+                    Второй приоритет — не для массовой работы
+                    <ChevronDown
+                      className={cn('h-4 w-4 transition-transform', showSecondPriority && 'rotate-180')}
+                    />
+                  </summary>
+                  <div className="flex flex-wrap gap-2 px-3 pb-3">
+                    {secondPriority.map((n) => (
+                      <span
+                        key={n}
+                        className="cursor-not-allowed rounded-full border border-border bg-card px-3 py-1 text-xs text-text-subtle opacity-60"
+                      >
+                        {n}
+                      </span>
+                    ))}
+                  </div>
+                </details>
+              )}
 
               {/* Field 2 — Region */}
               <div>
@@ -322,6 +485,11 @@ export function ParseLaunchPage() {
                               {step.key === 'search' && status !== 'pending' && (
                                 <p className="mt-0.5 text-xs text-text-muted">найдено: {run?.found ?? 0}</p>
                               )}
+                              {step.key === 'exclude' && status !== 'pending' && (
+                                <p className="mt-0.5 text-xs text-text-muted">
+                                  исключено: {run?.excludedCount ?? 0} (не соответствуют критериям)
+                                </p>
+                              )}
                               {step.key === 'phones' && status !== 'pending' && (
                                 <p className="mt-0.5 text-xs text-text-muted">
                                   дозапрошено: {run?.phonesFetched ?? 0} / {run?.phonesTotal ?? 0}
@@ -348,6 +516,25 @@ export function ParseLaunchPage() {
                 </h2>
                 {enrich && (
                   <p className="mt-1 text-sm text-text-muted">обогащено: {run?.enriched ?? 0}</p>
+                )}
+                {(run?.excludedCount ?? 0) > 0 && (
+                  <details
+                    className="mt-4 w-full rounded-xl border border-border bg-bento-base text-left"
+                    open={showExcluded}
+                    onToggle={(e) => setShowExcluded((e.target as HTMLDetailsElement).open)}
+                  >
+                    <summary className="flex cursor-pointer list-none items-center justify-between p-3 text-sm text-text-muted">
+                      Исключено: {run?.excludedCount} (не соответствуют критериям)
+                      <ChevronDown className={cn('h-4 w-4 transition-transform', showExcluded && 'rotate-180')} />
+                    </summary>
+                    <ul className="flex flex-col gap-1 px-3 pb-3">
+                      {(run?.excluded ?? []).map((e, i) => (
+                        <li key={`${e.name}-${i}`} className="text-xs text-text-muted">
+                          <span className="font-medium text-text-body">{e.name}</span> — {e.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
                 )}
                 <div className="mt-8 flex flex-wrap justify-center gap-2">
                   <button

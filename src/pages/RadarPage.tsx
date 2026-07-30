@@ -12,32 +12,51 @@ import {
   fetchRadarSignals,
   updateRadarSignal,
   convertSignalToLead,
-  fetchRadarChannels,
-  createRadarChannel,
-  createRadarChannelsBulk,
-  updateRadarChannel,
-  deleteRadarChannel,
+  fetchRadarSources,
+  createRadarSource,
+  createRadarSourcesBulk,
+  updateRadarSource,
+  deleteRadarSource,
   fetchRadarKeywords,
   createRadarKeyword,
   deleteRadarKeyword,
   type RadarStatus,
   type RadarSignal,
-  type RadarChannel,
+  type RadarSource,
+  type RadarSourceType,
   type RadarKeyword,
-  type RadarIntent,
+  type RadarCategory,
 } from '../lib/radar/api';
 
-type Tab = 'signals' | 'channels' | 'keywords';
+type Tab = 'signals' | 'sources' | 'keywords';
+
+const SOURCE_TYPE_LABELS: Record<RadarSourceType, string> = {
+  telegram: 'Telegram',
+  avito: 'Avito',
+  vc: 'VC.ru',
+  habr: 'Habr',
+  custom: 'Другое',
+};
+const SOURCE_TYPE_ORDER: RadarSourceType[] = ['telegram', 'avito', 'vc', 'habr', 'custom'];
 
 const KEYWORD_CATEGORIES = ['Прямой запрос', 'Боль-сигнал', 'Ниша + инструмент', 'Сравнение цен'] as const;
 
 /* ---------- shared bits ---------- */
 
-function IntentBadge({ intent }: { intent?: RadarIntent }) {
-  if (intent === 'yes') return <Badge className="bg-card-green text-accent-green">🎯 Целевой</Badge>;
-  if (intent === 'unclear') return <Badge className="bg-card-amber text-accent-amber">❓ Неясно</Badge>;
-  if (intent === 'no') return <Badge className="bg-muted text-muted-foreground">Не целевой</Badge>;
-  return null;
+const CATEGORY_STYLES: Record<RadarCategory, string> = {
+  A: 'bg-card-red text-accent-red',
+  B: 'bg-card-amber text-accent-amber',
+  C: 'bg-card-blue text-accent-blue',
+  D: 'bg-muted text-muted-foreground',
+};
+
+function CategoryBadge({ category, score }: { category?: RadarCategory; score?: number }) {
+  if (!category) return null;
+  return (
+    <Badge className={CATEGORY_STYLES[category]}>
+      {category} · {score ?? 0}
+    </Badge>
+  );
 }
 
 function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
@@ -136,7 +155,7 @@ function SignalCard({ signal, onChange }: { signal: RadarSignal; onChange: (s: R
           <span className="font-semibold text-foreground">@{signal.channel}</span>
           <span className="text-xs text-muted-foreground">{formatRelativeTime(signal.date ?? signal.foundAt)}</span>
         </div>
-        <IntentBadge intent={signal.aiIntent} />
+        <CategoryBadge category={signal.category} score={signal.signal_score} />
       </div>
 
       <button type="button" onClick={() => setExpanded((v) => !v)} className="mt-3 block w-full text-left">
@@ -154,6 +173,16 @@ function SignalCard({ signal, onChange }: { signal: RadarSignal; onChange: (s: R
       )}
 
       {signal.aiReason && <p className="mt-2 text-xs italic text-text-muted">{signal.aiReason}</p>}
+      {expanded && signal.evidence && (
+        <p className="mt-2 text-xs text-text-muted">
+          <span className="font-medium text-text-body">Основание:</span> {signal.evidence}
+        </p>
+      )}
+      {expanded && signal.recommended_action && (
+        <p className="mt-1 text-xs text-text-muted">
+          <span className="font-medium text-text-body">Действие:</span> {signal.recommended_action}
+        </p>
+      )}
 
       <div className="mt-4 flex flex-wrap items-center gap-1 border-t border-border pt-3">
         <a href={messageLink} target="_blank" rel="noreferrer">
@@ -186,7 +215,7 @@ function SignalCard({ signal, onChange }: { signal: RadarSignal; onChange: (s: R
 }
 
 function SignalsTab({ signals, setSignals }: { signals: RadarSignal[]; setSignals: (s: RadarSignal[]) => void }) {
-  const [filter, setFilter] = useState<'new' | 'all' | 'replied' | 'irrelevant'>('new');
+  const [filter, setFilter] = useState<'new' | 'all' | 'replied' | 'irrelevant' | 'archived'>('new');
 
   const counts = useMemo(
     () => ({
@@ -194,13 +223,16 @@ function SignalsTab({ signals, setSignals }: { signals: RadarSignal[]; setSignal
       all: signals.length,
       replied: signals.filter((s) => s.status === 'replied').length,
       irrelevant: signals.filter((s) => s.status === 'irrelevant').length,
+      archived: signals.filter((s) => s.status === 'archived').length,
     }),
     [signals],
   );
 
   const filtered = useMemo(() => {
-    if (filter === 'all') return signals;
-    return signals.filter((s) => s.status === filter);
+    const base = filter === 'all' ? signals : signals.filter((s) => s.status === filter);
+    // Highest-priority signals first by default — matches the A/B/C/D
+    // category thresholds (unscored signals sink to the bottom, not lost).
+    return [...base].sort((a, b) => (b.signal_score ?? -1) - (a.signal_score ?? -1));
   }, [signals, filter]);
 
   const pills: { id: typeof filter; label: string }[] = [
@@ -208,6 +240,7 @@ function SignalsTab({ signals, setSignals }: { signals: RadarSignal[]; setSignal
     { id: 'all', label: `Все (${counts.all})` },
     { id: 'replied', label: `Отвечено (${counts.replied})` },
     { id: 'irrelevant', label: `Не релевантно (${counts.irrelevant})` },
+    { id: 'archived', label: `Архив (${counts.archived})` },
   ];
 
   return (
@@ -249,52 +282,84 @@ function SignalsTab({ signals, setSignals }: { signals: RadarSignal[]; setSignal
   );
 }
 
-/* ---------- Tab 2: Каналы ---------- */
+/* ---------- Tab 2: Источники ---------- */
 
-function AddChannelModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (c: RadarChannel) => void }) {
-  const [username, setUsername] = useState('');
-  const [title, setTitle] = useState('');
+const SOURCE_TYPE_OPTIONS: { value: RadarSourceType; label: string }[] = [
+  { value: 'telegram', label: 'Telegram-канал' },
+  { value: 'avito', label: 'Avito (поиск)' },
+  { value: 'vc', label: 'VC.ru (поиск)' },
+  { value: 'habr', label: 'Habr (поиск)' },
+  { value: 'custom', label: 'Другое' },
+];
+
+function AddSourceModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (s: RadarSource) => void }) {
+  const [type, setType] = useState<RadarSourceType>('telegram');
+  const [identifier, setIdentifier] = useState('');
+  const [label, setLabel] = useState('');
   const [category, setCategory] = useState('');
   const [saving, setSaving] = useState(false);
 
+  const isTelegram = type === 'telegram';
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const clean = username.trim().replace(/^@/, '');
+    const clean = isTelegram ? identifier.trim().replace(/^@/, '') : identifier.trim();
     if (!clean) return;
     setSaving(true);
     try {
-      const { channel } = await createRadarChannel({ username: clean, title: title.trim() || undefined, category: category.trim() || undefined });
-      onCreated(channel);
-      toast.success('Канал добавлен');
-      setUsername('');
-      setTitle('');
+      const { source } = await createRadarSource({
+        type,
+        identifier: clean,
+        label: label.trim() || undefined,
+        category: category.trim() || undefined,
+      });
+      onCreated(source);
+      toast.success('Источник добавлен');
+      setIdentifier('');
+      setLabel('');
       setCategory('');
       onClose();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Не удалось добавить канал');
+      toast.error(e instanceof Error ? e.message : 'Не удалось добавить источник');
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="Добавить канал">
+    <Modal open={open} onClose={onClose} title="Добавить источник">
       <form onSubmit={submit} className="flex flex-col gap-4">
         <div>
-          <label className="mb-1 block text-sm font-medium text-foreground">Username канала</label>
+          <label className="mb-1 block text-sm font-medium text-foreground">Тип источника</label>
+          <select
+            value={type}
+            onChange={(e) => setType(e.target.value as RadarSourceType)}
+            className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            {SOURCE_TYPE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-sm font-medium text-foreground">
+            {isTelegram ? 'Username канала' : 'Поисковая ссылка'}
+          </label>
           <input
             autoFocus
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="durov или @durov"
+            value={identifier}
+            onChange={(e) => setIdentifier(e.target.value)}
+            placeholder={isTelegram ? 'durov или @durov' : 'https://www.avito.ru/moskva/predlozheniya_uslug?q=нужен+сайт'}
             className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
         </div>
         <div>
           <label className="mb-1 block text-sm font-medium text-foreground">Название (опционально)</label>
           <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
             className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground placeholder-muted-foreground focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
         </div>
@@ -311,7 +376,7 @@ function AddChannelModal({ open, onClose, onCreated }: { open: boolean; onClose:
           <button type="button" onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted min-h-[44px]">
             Отмена
           </button>
-          <button type="submit" disabled={saving || !username.trim()} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 min-h-[44px] disabled:opacity-50">
+          <button type="submit" disabled={saving || !identifier.trim()} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 min-h-[44px] disabled:opacity-50">
             Добавить
           </button>
         </div>
@@ -320,7 +385,7 @@ function AddChannelModal({ open, onClose, onCreated }: { open: boolean; onClose:
   );
 }
 
-function BulkChannelsModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
+function BulkTelegramModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -330,7 +395,7 @@ function BulkChannelsModal({ open, onClose, onCreated }: { open: boolean; onClos
     if (usernames.length === 0) return;
     setSaving(true);
     try {
-      const { created, skipped } = await createRadarChannelsBulk(usernames);
+      const { created, skipped } = await createRadarSourcesBulk(usernames);
       toast.success(`Добавлено ${created.length}${skipped ? `, пропущено ${skipped}` : ''}`);
       setText('');
       onCreated();
@@ -343,11 +408,12 @@ function BulkChannelsModal({ open, onClose, onCreated }: { open: boolean; onClos
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="Вставить список каналов">
+    <Modal open={open} onClose={onClose} title="Вставить список Telegram-каналов">
       <form onSubmit={submit} className="flex flex-col gap-4">
         <div>
           <label className="mb-1 block text-sm font-medium text-foreground">
-            Вставь список каналов, по одному на строку (с @ или без)
+            Вставь список каналов, по одному на строку (с @ или без) — только Telegram, для Avito/VC.ru/Habr
+            добавляй по одному через «Добавить источник»
           </label>
           <textarea
             autoFocus
@@ -371,36 +437,82 @@ function BulkChannelsModal({ open, onClose, onCreated }: { open: boolean; onClos
   );
 }
 
-function ChannelsTab({ channels, setChannels }: { channels: RadarChannel[]; setChannels: (c: RadarChannel[]) => void }) {
+function SourceRow({ source, onToggle, onDelete }: { source: RadarSource; onToggle: () => void; onDelete: () => void }) {
+  const displayName = source.type === 'telegram' ? `@${source.identifier}` : source.label || source.identifier;
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3 last:border-0">
+      <div className="flex items-center gap-3 min-w-0">
+        <Toggle checked={source.active} onChange={onToggle} />
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="truncate text-sm font-medium text-foreground">{displayName}</span>
+            {source.category && (
+              <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {source.category}
+              </span>
+            )}
+          </div>
+          {source.type !== 'telegram' && (
+            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{source.identifier}</p>
+          )}
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            Проверен: {source.lastCheckedAt ? formatRelativeTime(source.lastCheckedAt) : 'ещё не проверялся'}
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onDelete}
+        className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground hover:bg-red-50 hover:text-red-600"
+        aria-label="Удалить источник"
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+function SourcesTab({ sources, setSources }: { sources: RadarSource[]; setSources: (s: RadarSource[]) => void }) {
   const [addOpen, setAddOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
 
   const reload = async () => {
-    const { channels: fresh } = await fetchRadarChannels();
-    setChannels(fresh);
+    const { sources: fresh } = await fetchRadarSources();
+    setSources(fresh);
   };
 
-  const toggleActive = async (channel: RadarChannel) => {
-    const prev = channels;
-    setChannels(channels.map((c) => (c.id === channel.id ? { ...c, active: !c.active } : c)));
+  const toggleActive = async (source: RadarSource) => {
+    const prev = sources;
+    setSources(sources.map((s) => (s.id === source.id ? { ...s, active: !s.active } : s)));
     try {
-      await updateRadarChannel(channel.id, { active: !channel.active });
+      await updateRadarSource(source.id, { active: !source.active });
     } catch (e) {
-      setChannels(prev);
-      toast.error(e instanceof Error ? e.message : 'Не удалось обновить канал');
+      setSources(prev);
+      toast.error(e instanceof Error ? e.message : 'Не удалось обновить источник');
     }
   };
 
-  const handleDelete = async (channel: RadarChannel) => {
-    if (!window.confirm(`Удалить канал @${channel.username}?`)) return;
+  const handleDelete = async (source: RadarSource) => {
+    const name = source.type === 'telegram' ? `@${source.identifier}` : source.label || source.identifier;
+    if (!window.confirm(`Удалить источник «${name}»?`)) return;
     try {
-      await deleteRadarChannel(channel.id);
-      setChannels(channels.filter((c) => c.id !== channel.id));
-      toast.success('Канал удалён');
+      await deleteRadarSource(source.id);
+      setSources(sources.filter((s) => s.id !== source.id));
+      toast.success('Источник удалён');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Не удалось удалить канал');
+      toast.error(e instanceof Error ? e.message : 'Не удалось удалить источник');
     }
   };
+
+  const grouped = useMemo(() => {
+    const map = new Map<RadarSourceType, RadarSource[]>();
+    for (const type of SOURCE_TYPE_ORDER) map.set(type, []);
+    for (const s of sources) {
+      if (!map.has(s.type)) map.set(s.type, []);
+      map.get(s.type)?.push(s);
+    }
+    return SOURCE_TYPE_ORDER.map((type) => ({ type, items: map.get(type) ?? [] })).filter((g) => g.items.length > 0);
+  }, [sources]);
 
   return (
     <div>
@@ -411,7 +523,7 @@ function ChannelsTab({ channels, setChannels }: { channels: RadarChannel[]; setC
           className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-all hover:bg-blue-700 hover:shadow-md min-h-[44px]"
         >
           <Plus className="h-4 w-4" />
-          Добавить канал
+          Добавить источник
         </button>
         <button
           type="button"
@@ -419,54 +531,36 @@ function ChannelsTab({ channels, setChannels }: { channels: RadarChannel[]; setC
           className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-[rgba(0,0,0,0.08)] bg-white px-4 py-2 text-sm font-medium text-text-body shadow-sm transition-all hover:bg-muted hover:shadow-md min-h-[44px]"
         >
           <ClipboardPaste className="h-4 w-4" />
-          Вставить список
+          Вставить список Telegram
         </button>
       </div>
 
-      {channels.length === 0 ? (
+      {sources.length === 0 ? (
         <BentoCard className="flex flex-col items-center justify-center gap-1 p-10 text-center">
-          <p className="text-sm text-muted-foreground">Каналов пока нет.</p>
+          <p className="text-sm text-muted-foreground">Источников пока нет.</p>
           <p className="mx-auto max-w-md text-xs text-muted-foreground">
-            Каналы можно найти на tgstat.ru в категориях бизнес, IT-услуги, фриланс, а также в региональных чатах
-            предпринимателей
+            Telegram-каналы можно найти на tgstat.ru; для Avito/VC.ru/Habr добавь конкретную поисковую ссылку
           </p>
         </BentoCard>
       ) : (
-        <BentoCard className="overflow-hidden p-0">
-          {channels.map((ch) => (
-            <div key={ch.id} className="flex items-center justify-between gap-3 border-b border-border px-4 py-3 last:border-0">
-              <div className="flex items-center gap-3">
-                <Toggle checked={ch.active} onChange={() => toggleActive(ch)} />
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-medium text-foreground">@{ch.username}</span>
-                    {ch.title && <span className="text-xs text-muted-foreground">{ch.title}</span>}
-                    {ch.category && (
-                      <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                        {ch.category}
-                      </span>
-                    )}
-                  </div>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">
-                    Проверен: {ch.lastCheckedAt ? formatRelativeTime(ch.lastCheckedAt) : 'ещё не проверялся'}
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => handleDelete(ch)}
-                className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground hover:bg-red-50 hover:text-red-600"
-                aria-label="Удалить канал"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
+        <div className="flex flex-col gap-4">
+          {grouped.map((group) => (
+            <div key={group.type}>
+              <p className="mb-2 text-[10px] font-medium uppercase tracking-widest text-text-muted">
+                {SOURCE_TYPE_LABELS[group.type]} ({group.items.length})
+              </p>
+              <BentoCard className="overflow-hidden p-0">
+                {group.items.map((s) => (
+                  <SourceRow key={s.id} source={s} onToggle={() => toggleActive(s)} onDelete={() => handleDelete(s)} />
+                ))}
+              </BentoCard>
             </div>
           ))}
-        </BentoCard>
+        </div>
       )}
 
-      <AddChannelModal open={addOpen} onClose={() => setAddOpen(false)} onCreated={(c) => setChannels([...channels, c])} />
-      <BulkChannelsModal open={bulkOpen} onClose={() => setBulkOpen(false)} onCreated={reload} />
+      <AddSourceModal open={addOpen} onClose={() => setAddOpen(false)} onCreated={(s) => setSources([...sources, s])} />
+      <BulkTelegramModal open={bulkOpen} onClose={() => setBulkOpen(false)} onCreated={reload} />
     </div>
   );
 }
@@ -574,20 +668,20 @@ export function RadarPage() {
   const [status, setStatus] = useState<RadarStatus>({ lastRunAt: null, nextRunAt: null, running: false });
   const [checking, setChecking] = useState(false);
   const [signals, setSignals] = useState<RadarSignal[]>([]);
-  const [channels, setChannels] = useState<RadarChannel[]>([]);
+  const [sources, setSources] = useState<RadarSource[]>([]);
   const [keywords, setKeywords] = useState<RadarKeyword[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadAll = useCallback(async () => {
-    const [statusRes, signalsRes, channelsRes, keywordsRes] = await Promise.all([
+    const [statusRes, signalsRes, sourcesRes, keywordsRes] = await Promise.all([
       fetchRadarStatus(),
       fetchRadarSignals(),
-      fetchRadarChannels(),
+      fetchRadarSources(),
       fetchRadarKeywords(),
     ]);
     setStatus(statusRes);
     setSignals(signalsRes.signals);
-    setChannels(channelsRes.channels);
+    setSources(sourcesRes.sources);
     setKeywords(keywordsRes.keywords);
   }, []);
 
@@ -629,7 +723,7 @@ export function RadarPage() {
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'signals', label: 'Сигналы' },
-    { id: 'channels', label: 'Каналы' },
+    { id: 'sources', label: 'Источники' },
     { id: 'keywords', label: 'Ключевые слова' },
   ];
 
@@ -675,7 +769,7 @@ export function RadarPage() {
       </div>
 
       {tab === 'signals' && <SignalsTab signals={signals} setSignals={setSignals} />}
-      {tab === 'channels' && <ChannelsTab channels={channels} setChannels={setChannels} />}
+      {tab === 'sources' && <SourcesTab sources={sources} setSources={setSources} />}
       {tab === 'keywords' && <KeywordsTab keywords={keywords} setKeywords={setKeywords} />}
     </div>
   );

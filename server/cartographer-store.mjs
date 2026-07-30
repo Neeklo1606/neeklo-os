@@ -14,8 +14,10 @@ export function createCartographerRun(meta) {
   runs.set(id, {
     id,
     status: 'running', // running | completed | failed
-    stage: 'search', // search | extract | phones | enrich | score | done
+    stage: 'search', // search | extract | exclude | phones | enrich | score | done
     found: 0,
+    excludedCount: 0,
+    excluded: [], // { name, reason }[] — transparency, not silent dropping
     phonesTotal: 0,
     phonesFetched: 0,
     enriched: 0,

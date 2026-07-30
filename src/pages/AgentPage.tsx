@@ -40,7 +40,7 @@ import { jsonRowsToCompanies } from '../lib/companies/fromAgentJson';
 import { useCompaniesStore } from '../lib/stores/companiesStore';
 import { fetchCompanies } from '../lib/companies/api';
 import {
-  createRadarChannel,
+  createRadarSource,
   fetchRadarSignals,
   fetchRadarStatus,
   triggerRadarCheckNow,
@@ -73,8 +73,8 @@ async function executeAgentAction(action: AgentAction): Promise<string> {
     case 'radar.addChannel': {
       const username = String(action.params.username ?? '').trim().replace(/^@/, '');
       if (!username) throw new Error('Не указан username канала');
-      const { channel } = await createRadarChannel({ username });
-      return `✅ Канал @${channel.username} добавлен в Радар.`;
+      const { source } = await createRadarSource({ type: 'telegram', identifier: username });
+      return `✅ Канал @${source.identifier} добавлен в Радар.`;
     }
 
     case 'radar.check': {

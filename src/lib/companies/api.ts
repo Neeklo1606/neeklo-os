@@ -1,4 +1,4 @@
-import type { Company, CompanyStatus } from '../../data/mock';
+import type { Company, CompanyStatus, Opportunity } from '../../data/mock';
 
 const API_BASE =
   (import.meta.env.VITE_COMPANIES_API_URL as string | undefined)?.replace(/\/$/, '') ??
@@ -88,4 +88,11 @@ export async function scoreCompanyApi(id: string) {
   return request<{ success: boolean; company: Company }>(`/${encodeURIComponent(id)}/score`, {
     method: 'POST',
   });
+}
+
+export async function generateOpportunityApi(id: string) {
+  return request<{ success: boolean; opportunity: Opportunity }>(
+    `/${encodeURIComponent(id)}/generate-opportunity`,
+    { method: 'POST' },
+  );
 }

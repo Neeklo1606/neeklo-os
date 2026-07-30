@@ -2,6 +2,53 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from '
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/**
+ * Company shape — a plain JS object, nothing enforced at runtime (matches
+ * every other *-db.mjs in this codebase). All fields below the original
+ * cartographer/agent set are additive and optional; existing records
+ * without them keep working unchanged since readAll/writeAll never drop
+ * unknown keys.
+ * @typedef {{
+ *   id: string,
+ *   name: string,
+ *   industry?: string,
+ *   website?: string,
+ *   phone?: string,
+ *   phone2?: string | null,
+ *   email?: string,
+ *   status: 'new' | 'Research' | 'Qualified' | 'Contacted' | 'Replied' | 'Meeting' | 'Audit' | 'Proposal' | 'Won' | 'Lost' | 'Archive',
+ *   city?: string,
+ *   address?: string | null,
+ *   source?: string,
+ *   source_url?: string | null,
+ *   campaignId?: string,
+ *   rating?: number,
+ *   reviewCount?: number,
+ *   niches?: string[],
+ *   score?: number,
+ *   score_breakdown?: Record<string, unknown>,
+ *   createdAt: string,
+ *   enrichedAt?: string,
+ *   // ── strategy fields (server/verticals.mjs taxonomy + fit scoring) ──
+ *   vertical?: 'manufacturers' | 'glamping' | 'b2bServices',
+ *   subsegment?: string,
+ *   legal_name?: string,
+ *   maps_url?: string,
+ *   avito_url?: string,
+ *   telegram_url?: string,
+ *   vk_url?: string,
+ *   email_public?: string,
+ *   first_seen_at?: string,
+ *   last_checked_at?: string,
+ *   data_confidence?: 'high' | 'medium' | 'low',
+ *   decision_maker?: string,
+ *   decision_maker_role?: string,
+ *   fit_score?: number,
+ *   fit_breakdown?: Record<string, unknown>,
+ *   sales_priority?: 'A' | 'B' | 'C' | 'D',
+ * }} Company
+ */
+
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const DEFAULT_PATH = join(__dirname, '..', 'data', 'companies.json');
 
@@ -134,6 +181,7 @@ export function createCompany(company) {
     throw err;
   }
   if (!company.createdAt) company.createdAt = new Date().toISOString();
+  if (!company.first_seen_at) company.first_seen_at = company.createdAt;
   all.push(company);
   writeAll(all);
   return company;
@@ -153,6 +201,7 @@ export function createCompanies(incoming) {
     const row = { ...company };
     if (!row.id) row.id = `co-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     if (!row.createdAt) row.createdAt = new Date().toISOString();
+    if (!row.first_seen_at) row.first_seen_at = row.createdAt;
 
     if (all.some((c) => c.id === row.id) || created.some((c) => c.id === row.id)) {
       skipped += 1;

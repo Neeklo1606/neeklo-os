@@ -30,6 +30,8 @@ DATABASE_PATH=${process.env.DATABASE_PATH ?? './data/companies.json'}
 LEADS_DATABASE_PATH=${process.env.LEADS_DATABASE_PATH ?? './data/leads.json'}
 CAMPAIGNS_DATABASE_PATH=${process.env.CAMPAIGNS_DATABASE_PATH ?? './data/campaigns.json'}
 AGENT_SESSIONS_DATABASE_PATH=${process.env.AGENT_SESSIONS_DATABASE_PATH ?? './data/agent-sessions.json'}
+TELEGRAM_BOT_TOKEN=${process.env.TELEGRAM_BOT_TOKEN ?? ''}
+TELEGRAM_CHAT_ID=${process.env.TELEGRAM_CHAT_ID ?? ''}
 `;
 
 execSync('npm run build', {

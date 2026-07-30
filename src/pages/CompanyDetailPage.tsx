@@ -1,4 +1,4 @@
-import { useMemo, useState, type ComponentType, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Phone,
@@ -16,10 +16,13 @@ import {
   Zap,
   Sparkles,
   Loader2,
+  AlertTriangle,
+  TrendingUp,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { SOURCE_CONFIG, type Company, type CompanyScoreBreakdown, type CompanyStatus } from '../data/mock';
+import { SOURCE_CONFIG, type Company, type CompanyScoreBreakdown, type CompanyStatus, type DigitalAudit } from '../data/mock';
 import { useCompaniesStore } from '../lib/stores/companiesStore';
+import { fetchAudit } from '../lib/companies/audits-api';
 import { ScoreBadge } from '../components/ui/ScoreBadge';
 import { AppShell } from '../components/AppShell';
 import { cn } from '../lib/utils';
@@ -56,6 +59,36 @@ const DETECTED_SIGNALS: { key: keyof Company; label: string }[] = [
   { key: 'socialVk', label: 'Есть VK' },
   { key: 'socialTelegram', label: 'Есть Telegram-канал' },
 ];
+
+const AUDIT_SIGNALS: { key: keyof DigitalAudit; label: string }[] = [
+  { key: 'website_exists', label: 'Сайт существует' },
+  { key: 'https', label: 'HTTPS' },
+  { key: 'form_exists', label: 'Форма на сайте' },
+  { key: 'booking_exists', label: 'Онлайн-запись' },
+  { key: 'catalog_exists', label: 'Каталог' },
+  { key: 'personal_account_exists', label: 'Личный кабинет' },
+  { key: 'dealer_section_exists', label: 'Дилерский раздел' },
+  { key: 'analytics_detected', label: 'Аналитика' },
+  { key: 'crm_widget_detected', label: 'CRM-виджет' },
+];
+
+const CONFIDENCE_STYLES: Record<string, string> = {
+  high: 'bg-green-50 text-green-700',
+  medium: 'bg-amber-50 text-amber-700',
+  low: 'bg-gray-100 text-text-muted',
+};
+
+const CONFIDENCE_LABELS: Record<string, string> = {
+  high: 'высокая',
+  medium: 'средняя',
+  low: 'низкая',
+};
+
+const MOBILE_STATUS_LABELS: Record<string, string> = {
+  good: 'без проблем',
+  issues: 'есть проблемы',
+  unknown: 'не определено',
+};
 
 function funnelIndex(status: CompanyStatus): number {
   const idx = FUNNEL_STAGES.findIndex((s) => s.key === status);
@@ -112,6 +145,8 @@ export function CompanyDetailPage() {
   const updateStatus = useCompaniesStore((s) => s.updateStatus);
   const enrichCompany = useCompaniesStore((s) => s.enrichCompany);
   const [enriching, setEnriching] = useState(false);
+  const [audit, setAudit] = useState<DigitalAudit | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
 
   const companyIndex = useMemo(
     () => companies.findIndex((c) => c.id === companyId),
@@ -119,6 +154,28 @@ export function CompanyDetailPage() {
   );
 
   const company = companyIndex >= 0 ? companies[companyIndex] : undefined;
+
+  useEffect(() => {
+    if (!companyId) {
+      setAudit(null);
+      return;
+    }
+    let cancelled = false;
+    setAuditLoading(true);
+    fetchAudit(companyId)
+      .then((result) => {
+        if (!cancelled) setAudit(result);
+      })
+      .catch(() => {
+        if (!cancelled) setAudit(null);
+      })
+      .finally(() => {
+        if (!cancelled) setAuditLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId]);
 
   const score = company ? companyScore(company) : 0;
   const breakdown = company ? resolveBreakdown(company) : {};
@@ -161,6 +218,8 @@ export function CompanyDetailPage() {
     setEnriching(true);
     try {
       await enrichCompany(company.id);
+      const freshAudit = await fetchAudit(company.id).catch(() => null);
+      setAudit(freshAudit);
       toast.success('Сайт проверен заново');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Не удалось обогатить компанию');
@@ -367,6 +426,140 @@ export function CompanyDetailPage() {
                   <p className="mt-3 text-[12px] text-text-subtle">Сайт ещё не проверялся</p>
                 )}
               </div>
+            </div>
+
+            {/* Цифровой аудит — full server/audit-db.mjs record, fetched separately per company */}
+            <div className="rounded-2xl border border-border bg-card p-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-[10px] font-medium uppercase tracking-widest text-text-muted">
+                  Цифровой аудит
+                </h2>
+                {audit?.audit_confidence && (
+                  <span
+                    className={cn(
+                      'rounded-full px-2.5 py-0.5 text-xs font-medium',
+                      CONFIDENCE_STYLES[audit.audit_confidence],
+                    )}
+                  >
+                    Уверенность: {CONFIDENCE_LABELS[audit.audit_confidence]}
+                  </span>
+                )}
+              </div>
+
+              {auditLoading && <p className="mt-4 text-[13px] text-text-muted">Загрузка...</p>}
+
+              {!auditLoading && !audit && (
+                <p className="mt-4 text-[13px] text-text-muted">Аудит ещё не проводился</p>
+              )}
+
+              {!auditLoading && audit && (
+                <>
+                  {audit.human_review_required && (
+                    <div className="mt-4 flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-3">
+                      <AlertTriangle className="h-4 w-4 shrink-0 text-red-500" />
+                      <span className="text-[13px] font-medium text-red-700">Требует ручной проверки</span>
+                    </div>
+                  )}
+
+                  {audit.observed_gap && (
+                    <div className="mt-4 rounded-xl border border-amber-100 bg-amber-50 p-4">
+                      <p className="font-mono text-[10px] uppercase tracking-widest text-amber-700/70">
+                        Наблюдаемый разрыв (гипотеза)
+                      </p>
+                      <p className="mt-2 text-[13px] leading-relaxed text-amber-800">{audit.observed_gap}</p>
+                    </div>
+                  )}
+
+                  {audit.key_conversion_path && (
+                    <div className="mt-4">
+                      <p className="mb-1.5 font-mono text-[10px] uppercase tracking-widest text-text-muted">
+                        Путь конверсии
+                      </p>
+                      <p className="text-[13px] leading-relaxed text-text-body">{audit.key_conversion_path}</p>
+                    </div>
+                  )}
+
+                  <div className="mt-5 border-t border-border/40 pt-4">
+                    <p className="mb-2 font-mono text-[10px] uppercase tracking-widest text-text-muted">
+                      Проверенные признаки
+                    </p>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                      {AUDIT_SIGNALS.map(({ key, label }) => {
+                        const met = Boolean(audit[key]);
+                        return (
+                          <div key={String(key)} className="flex items-center gap-2 py-0.5">
+                            {met ? (
+                              <CheckCircle className="h-3.5 w-3.5 shrink-0 text-green-500" />
+                            ) : (
+                              <X className="h-3.5 w-3.5 shrink-0 text-gray-300" />
+                            )}
+                            <span className={cn('text-[12px]', met ? 'text-text-primary' : 'text-text-muted')}>
+                              {label}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {audit.messenger_links && audit.messenger_links.length > 0 && (
+                      <div className="mt-3">
+                        <p className="mb-1 font-mono text-[10px] uppercase tracking-widest text-text-muted">
+                          Мессенджеры
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {audit.messenger_links.map((link) => (
+                            <a
+                              key={link}
+                              href={link}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[12px] text-sky-600 hover:underline"
+                            >
+                              {link}
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {audit.growth_signals && audit.growth_signals.length > 0 && (
+                      <div className="mt-3 flex items-start gap-2">
+                        <TrendingUp className="mt-0.5 h-3.5 w-3.5 shrink-0 text-green-500" />
+                        <p className="text-[12px] text-text-body">
+                          Сигналы роста: {audit.growth_signals.join(', ')}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {audit.mobile_status && (
+                    <p className="mt-4 text-[12px] text-text-muted">
+                      Мобильная версия:{' '}
+                      <span className="font-medium text-text-body">
+                        {MOBILE_STATUS_LABELS[audit.mobile_status]}
+                      </span>
+                    </p>
+                  )}
+
+                  <div className="mt-4 flex items-center justify-between border-t border-border/40 pt-4">
+                    {audit.proof_url ? (
+                      <a
+                        href={audit.proof_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[12px] text-sky-600 hover:underline"
+                      >
+                        {audit.proof_url}
+                      </a>
+                    ) : (
+                      <span className="text-[12px] text-text-subtle">Источник не указан</span>
+                    )}
+                    <span className="text-[11px] text-text-subtle">
+                      Проверено: {new Date(audit.audited_at).toLocaleDateString('ru-RU')}
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
